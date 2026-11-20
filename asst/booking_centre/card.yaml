@@ -1,7 +1,7 @@
 agent_id: agent:h3n6kfd18r3g
 team: team:tartufi-pazzi
 name: booking_centre
-version: 1.0.2
+version: 1.0.4
 cap_versions:
   - "1.0"
 profiles:
