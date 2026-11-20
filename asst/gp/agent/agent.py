@@ -459,7 +459,7 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
         return
     if _emergency(message):
         if not _we(chat, agent, "escalate.emergency", to=message.sender, word="escalate.emergency"):
-            await _say(city, message.sender, "escalate.emergency reason=red_flag")
+            await _say(city, message.sender, f"escalate.emergency reason=red_flag {_URGENT}")
         return
     code = _symptom(message)
     if code is None:
@@ -491,7 +491,34 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
     await _say(
         city,
         message.sender,
-        f"prescription {token} procedure={procedure} priority={priority}",
+        f"prescription {token} procedure={procedure} priority={priority} "
+        f"{_rx_note(procedure, priority)}",
+    )
+
+
+_URGENT = (
+    "Quello che descrive può essere un'urgenza: chiami subito il 112 o vada al pronto "
+    "soccorso più vicino, non aspetti un appuntamento."
+)
+_VISIT_NAMES = {"VIS-FIS": "una visita fisiatrica", "VIS-CARD": "una visita cardiologica"}
+_PRIORITY_NOTES = {
+    "U": "da fare oggi stesso",
+    "B": "da fare entro 2 giorni",
+    "D": "da fare entro 5 giorni",
+    "P": "programmabile, senza urgenza",
+}
+
+
+def _rx_note(procedure: str | None, priority: str | None) -> str:
+    """A kind sentence after the tokens: what the prescription is and what to do next."""
+
+    visit = _VISIT_NAMES.get(procedure or "", "la visita indicata")
+    when = _PRIORITY_NOTES.get(priority or "")
+    when = f" ({when})" if when else ""
+    return (
+        f"Grazie per avermi scritto. Le ho preparato la ricetta per {visit}{when}. "
+        "Ora può contattare il centro prenotazioni con questo numero di ricetta per "
+        "scegliere l'appuntamento. Se i sintomi peggiorano, mi riscriva subito."
     )
 
 
@@ -516,6 +543,7 @@ async def _announce(city: City, message: Message, chat: list[Message], agent: st
         parts.append(f"procedure={procedure}")
     if priority:
         parts.append(f"priority={priority}")
+    parts.append(_rx_note(procedure, priority))
     await _say(city, citizen, " ".join(parts))
 
 
