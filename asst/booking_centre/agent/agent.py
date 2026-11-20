@@ -950,6 +950,45 @@ def _our_offer(chat: list[Message], agent: str, offer_id: str) -> dict[str, str]
     return {}
 
 
+def _find_offer(chat: list[Message], agent: str, offer_id: str) -> dict[str, str]:
+    """Our offer by id, even when our own sent message is missing from the history.
+
+    Journey 000045: the citizen confirmed a valid offer 32 minutes later and our own offer
+    row was not found, so the confirm was dropped. A local id is ``of-<slot_id>``: the slot
+    and its facility are in the Ledger's slot lines, which reach us. A partner's offer is in
+    the partner's own message to us.
+    """
+
+    if not offer_id:
+        return {}
+    found = _our_offer(chat, agent, offer_id)
+    if found:
+        return found
+    number = _number(chat)
+    if offer_id.startswith("of-"):
+        slot_id = offer_id[3:]
+        for row in chat:
+            if row.sender != LEDGER or first_word(row.text) != "slots":
+                continue
+            for line in row.text.splitlines():
+                slot = fields_of(line)
+                if slot.get("slot_id") == slot_id and slot.get("facility"):
+                    rebuilt = {"offer_id": offer_id, **slot}
+                    if number:
+                        rebuilt["prescription_number"] = number
+                    return rebuilt
+        return {}
+    for row in chat:
+        if not row.sender.startswith("agent:") or row.sender == agent:
+            continue
+        for offer in _partner_offers_in(row.text, row.sender):
+            if offer.get("offer_id") == offer_id:
+                if number:
+                    offer.setdefault("prescription_number", number)
+                return offer
+    return {}
+
+
 class _Gate:
     """One need's lock and how many turns hold it or wait for it."""
 
@@ -1022,7 +1061,7 @@ async def _desk(
     if (
         message.sender.startswith("citizen:")
         and "prescription_number=" not in message.text
-        and _open_cross_ask(chat, city.agent_id)
+        and _open_cross_ask(chat, city.agent_id, message.sender)
     ):
         await _on_cross_consent(city, message, chat)
         return
@@ -1324,7 +1363,7 @@ async def _on_confirm(
     fields = fields_of(message.text)
     offer_id = fields.get("offer_id", "")
     consent = fields.get("consent_ref", "")
-    offer = _our_offer(chat, agent, offer_id) if offer_id else {}
+    offer = _find_offer(chat, agent, offer_id)
     slot = fields.get("slot_id") or offer.get("slot_id", "")
     facility = fields.get("facility") or offer.get("facility", "")
     if not slot or not consent:
@@ -1380,10 +1419,15 @@ def _cross_consent_ref(chat: list[Message], citizen: str) -> str:
     return ref
 
 
-def _open_cross_ask(chat: list[Message], agent: str) -> str:
+# Citizen -> offer of our open cross_asst question, in case our own sent row is not found in
+# the history (see _find_offer). Cleared when the question is answered.
+_CROSS_ASKED: dict[str, str] = {}
+
+
+def _open_cross_ask(chat: list[Message], agent: str, citizen: str = "") -> str:
     """The offer of our latest cross_asst consent question that is still unanswered."""
 
-    open_id = ""
+    open_id = _CROSS_ASKED.get(citizen, "") if citizen else ""
     for row in chat:
         if row.sender != agent:
             continue
@@ -1403,7 +1447,7 @@ async def _ask_cross_consent(
     """Ask once per offer for the consent a cross-ASST hold needs."""
 
     token = f"offer_id={offer_id}"
-    if any(
+    if _CROSS_ASKED.get(citizen) == offer_id or any(
         row.sender == agent
         and first_word(row.text) == "consent"
         and "purpose=cross_asst" in row.text.split()
@@ -1412,18 +1456,20 @@ async def _ask_cross_consent(
     ):
         return
     sentence = _CROSS_ASK_IT if _lang(chat) == "it" else _CROSS_ASK_EN
-    await _say(city, citizen, f"consent purpose=cross_asst {token} {sentence}")
+    if await _say(city, citizen, f"consent purpose=cross_asst {token} {sentence}"):
+        _CROSS_ASKED[citizen] = offer_id
 
 
 async def _on_cross_consent(city: City, message: Message, chat: list[Message]) -> None:
     """The citizen answered our cross_asst question: forward with the ref, or drop on a no."""
 
     agent = city.agent_id
-    offer_id = _open_cross_ask(chat, agent)
+    citizen = message.sender
+    offer_id = _open_cross_ask(chat, agent, citizen)
     if not offer_id:
         return
-    offer = _our_offer(chat, agent, offer_id)
-    citizen = message.sender
+    _CROSS_ASKED.pop(citizen, None)
+    offer = _find_offer(chat, agent, offer_id)
     ref = fields_of(message.text).get("consent_ref", "")
     if ref:
         await _forward_confirm(
