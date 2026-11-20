@@ -105,6 +105,15 @@ _PARTNER_ASK_IT = "Nella nostra ASST non ci sono posti adatti: sto chiedendo all
 _PARTNER_ASK_EN = "No suitable slot in our ASST: I am asking the nearby ASSTs."
 _PARTNER_LEAD_IT = "Questi posti sono in un'altra ASST della rete."
 _PARTNER_LEAD_EN = "These appointments are at a partner ASST."
+_CROSS_ASK_IT = (
+    "Per prenotare in un'altra ASST mi serve il suo consenso a condividere con quella "
+    "struttura i dati necessari."
+)
+_CROSS_ASK_EN = (
+    "To book at another ASST I need your consent to share the necessary data with that facility."
+)
+_CROSS_NO_IT = "Va bene, non condivido i suoi dati con l'altra ASST."
+_CROSS_NO_EN = "All right, I won't share your data with the other ASST."
 # Rule P1: a prescription is valid for 2 agenda days after it is issued.
 _RX_VALID_DAYS = 2
 _RENEW_IT = (
@@ -1008,6 +1017,13 @@ async def _desk(
         key = message.need_id or message.msg_id
         await _locked(key, lambda: _on_partner_offer(city, message, chat))
         return
+    if (
+        message.sender.startswith("citizen:")
+        and "prescription_number=" not in message.text
+        and _open_cross_ask(chat, city.agent_id)
+    ):
+        await _on_cross_consent(city, message, chat)
+        return
     if message.sender == LEDGER or message.sender.startswith("citizen:"):
         await _advance(city, message, chat, fixed=fixed, replacing=False)
 
@@ -1330,9 +1346,120 @@ async def _on_confirm(
         return
     if not facility or not citizen:
         return
+    offer_id = offer_id or offer.get("offer_id", "")
+    if facility not in _own_facilities(chat) and not offer_id.startswith("of-"):
+        # A partner ASST's slot: no citizen data leaves before the cross_asst consent (P2).
+        ref = _cross_consent_ref(chat, citizen)
+        if not ref:
+            await _ask_cross_consent(city, chat, agent, citizen, offer_id)
+            return
+        consent = ref
+    await _forward_confirm(
+        city,
+        message,
+        chat,
+        offer_id=offer_id,
+        slot=slot,
+        citizen=citizen,
+        consent=consent,
+        facility=facility,
+        number=number,
+    )
+
+
+def _cross_consent_ref(chat: list[Message], citizen: str) -> str:
+    """The citizen's latest cross_asst consent reference, if they gave one."""
+
+    ref = ""
+    for row in chat:
+        if row.sender != citizen or "purpose=cross_asst" not in row.text.split():
+            continue
+        ref = fields_of(row.text).get("consent_ref", ref)
+    return ref
+
+
+def _open_cross_ask(chat: list[Message], agent: str) -> str:
+    """The offer of our latest cross_asst consent question that is still unanswered."""
+
+    open_id = ""
+    for row in chat:
+        if row.sender != agent:
+            continue
+        fields = fields_of(row.text)
+        if first_word(row.text) == "consent" and "purpose=cross_asst" in row.text.split():
+            open_id = fields.get("offer_id", "")
+        elif open_id and fields.get("offer_id") == open_id and (
+            first_word(row.text) in ("confirm", "cancel")
+        ):
+            open_id = ""
+    return open_id
+
+
+async def _ask_cross_consent(
+    city: City, chat: list[Message], agent: str, citizen: str, offer_id: str
+) -> None:
+    """Ask once per offer for the consent a cross-ASST hold needs."""
+
+    token = f"offer_id={offer_id}"
+    if any(
+        row.sender == agent
+        and first_word(row.text) == "consent"
+        and "purpose=cross_asst" in row.text.split()
+        and token in row.text.split()
+        for row in chat
+    ):
+        return
+    sentence = _CROSS_ASK_IT if _lang(chat) == "it" else _CROSS_ASK_EN
+    await _say(city, citizen, f"consent purpose=cross_asst {token} {sentence}")
+
+
+async def _on_cross_consent(city: City, message: Message, chat: list[Message]) -> None:
+    """The citizen answered our cross_asst question: forward with the ref, or drop on a no."""
+
+    agent = city.agent_id
+    offer_id = _open_cross_ask(chat, agent)
+    if not offer_id:
+        return
+    offer = _our_offer(chat, agent, offer_id)
+    citizen = message.sender
+    ref = fields_of(message.text).get("consent_ref", "")
+    if ref:
+        await _forward_confirm(
+            city,
+            message,
+            chat,
+            offer_id=offer_id,
+            slot=offer.get("slot_id", ""),
+            citizen=citizen,
+            consent=ref,
+            facility=offer.get("facility", ""),
+            number=offer.get("prescription_number") or _number(chat),
+        )
+        return
+    if not _we(chat, agent, f"offer_id={offer_id}", to=citizen, word="cancel"):
+        sentence = _CROSS_NO_IT if _lang(chat) == "it" else _CROSS_NO_EN
+        await _say(city, citizen, f"cancel offer_id={offer_id} reason=consent_declined {sentence}")
+
+
+async def _forward_confirm(
+    city: City,
+    message: Message,
+    chat: list[Message],
+    *,
+    offer_id: str,
+    slot: str,
+    citizen: str,
+    consent: str,
+    facility: str,
+    number: str | None,
+) -> None:
+    """Send the citizen's choice to the facility that holds the slot; tell them if it fails."""
+
+    agent = city.agent_id
+    if not slot or not facility or not consent:
+        return
     if _we(chat, agent, f"slot_id={slot}", to=facility, word="confirm"):
         return
-    offer_id = offer_id or offer.get("offer_id", "")
     parts = [
         "confirm",
         f"offer_id={offer_id}",
