@@ -17,7 +17,17 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from city_sdk.city import LEDGER, CapError, City, Message, Need, OutOfScope, clinical, understood
+from city_sdk.city import (
+    LEDGER,
+    CapError,
+    City,
+    Message,
+    Need,
+    OutOfScope,
+    Peer,
+    clinical,
+    understood,
+)
 
 ROLES = ("booking_centre", "gp", "hospital", "specialist_care", "family_counseling")
 _MAX_PAGE = 8
@@ -83,6 +93,16 @@ _NO_OTHER_IT = (
     "la struttura è temporaneamente non raggiungibile."
 )
 _NO_OTHER_EN = "No other slot is available right now: the facility is temporarily unreachable."
+# Cross-ASST: the ring partner may have what our ASST lacks. The search carries only these
+# criteria; no citizen data leaves before the cross_asst consent.
+_PARTNER_CAPABILITY = {
+    "VIS-FIS": "hospital.physiatry",
+    "VIS-CARD": "specialist_care.cardiology",
+    "CTRL-CARD": "specialist_care.cardiology",
+}
+_MAX_PARTNERS = 3
+_PARTNER_ASK_IT = "Nella nostra ASST non ci sono posti adatti: sto chiedendo alle ASST vicine."
+_PARTNER_ASK_EN = "No suitable slot in our ASST: I am asking the nearby ASSTs."
 # Rule P1: a prescription is valid for 2 agenda days after it is issued.
 _RX_VALID_DAYS = 2
 _RENEW_IT = (
@@ -652,6 +672,96 @@ async def _ask_renewal(
         entry.offers.add(mark)
 
 
+def _own_facilities(chat: list[Message]) -> set[str]:
+    """Our ASST's facilities: every ``facility=`` in the Ledger's slot lines."""
+
+    found: set[str] = set()
+    for row in chat:
+        if row.sender != LEDGER or first_word(row.text) != "slots":
+            continue
+        for line in row.text.splitlines():
+            facility = fields_of(line).get("facility") if "slot_id=" in line else None
+            if facility:
+                found.add(facility)
+    return found
+
+
+def _district(chat: list[Message]) -> int | None:
+    """The citizen's ``area.district``, if it is a number."""
+
+    for row in chat:
+        if row.sender.startswith("citizen:"):
+            raw = fields_of(row.text).get("area.district", "")
+            if raw.isdigit():
+                return int(raw)
+    return None
+
+
+async def _partner_peers(
+    city: City, procedure: str, ours: set[str], district: int | None
+) -> list[Peer]:
+    """Partner facilities for ``procedure`` from the Index: never ours, the citizen's district first."""
+
+    capability = _PARTNER_CAPABILITY.get(procedure, "")
+    if not capability:
+        return []
+    try:
+        found = await city.find(capability)
+    except CapError:
+        return []
+    keep = [
+        peer
+        for peer in found
+        if peer.agent_id not in ours and capability in tuple(peer.capabilities or ())
+    ]
+    keep.sort(key=lambda peer: district is None or peer.district != district)
+    return keep
+
+
+async def _ask_partners(
+    city: City,
+    chat: list[Message],
+    agent: str,
+    citizen: str,
+    procedure: str | None,
+    priority: str | None,
+    key: str,
+    avoid: str | None = None,
+) -> bool:
+    """Search criteria to up to three partner facilities, once per case. True when asked."""
+
+    request_id = f"x-{key}"
+    token = f"request_id={request_id}"
+    entry = _sent(key)
+    asked = {
+        row.recipient
+        for row in chat
+        if row.sender == agent and "need.request" in words(row.text) and token in row.text.split()
+    } | {mark.partition(":")[2] for mark in entry.offers if mark.startswith("partner:")}
+    if asked and avoid is None:
+        return True
+    capability = _PARTNER_CAPABILITY.get(procedure or "", "")
+    if not capability or not procedure:
+        return False
+    ours = _own_facilities(chat) | asked | ({avoid} if avoid else set())
+    parts = ["need.request", f"service_type={capability}", f"procedure={procedure}"]
+    if priority:
+        parts.append(f"priority={priority}")
+    parts.append(token)
+    sent_now = False
+    for peer in (await _partner_peers(city, procedure, ours, _district(chat)))[:_MAX_PARTNERS]:
+        if await _send(city, peer.agent_id, " ".join(parts)) is None:
+            entry.offers.add(f"partner:{peer.agent_id}")
+            sent_now = True
+    if not sent_now:
+        return bool(asked - ({avoid} if avoid else set()))
+    notice = _PARTNER_ASK_IT if _lang(chat) == "it" else _PARTNER_ASK_EN
+    if "partner-notice" not in entry.offers and not _exact(chat, agent, notice):
+        if await _say(city, citizen, notice):
+            entry.offers.add("partner-notice")
+    return True
+
+
 def _latest_slots(chat: list[Message]) -> str | None:
     found: str | None = None
     for row in chat:
@@ -1023,21 +1133,26 @@ async def _advance_alone(
         taken = _withdrawn(chat, agent) | sent.again
     else:
         taken = _offered(chat, agent, number) | sent.offers
+    fits = fitting(
+        [line for line in world.splitlines() if "slot_id=" in line],
+        now=now,
+        priority=priority,
+        lang=_lang(chat),
+        gender=_gender(chat),
+        facility=agent if fixed == "CONS-GIN" else None,
+        procedure=procedure,
+    )
     chosen = [
         slot
-        for slot in fitting(
-            [line for line in world.splitlines() if "slot_id=" in line],
-            now=now,
-            priority=priority,
-            lang=_lang(chat),
-            gender=_gender(chat),
-            facility=agent if fixed == "CONS-GIN" else None,
-            procedure=procedure,
-        )
+        for slot in fits
         if slot.get("slot_id") not in taken and slot.get("facility") != avoid
     ]
     if avoid and not chosen:
-        # The facility is unreachable and nothing else fits here: say so instead of silence.
+        # The facility is unreachable and nothing else fits here: a partner ASST may have it.
+        if fixed is None and await _ask_partners(
+            city, chat, agent, citizen, procedure, priority, key, avoid=avoid
+        ):
+            return
         none = _NO_OTHER_IT if _lang(chat) == "it" else _NO_OTHER_EN
         if not _exact(chat, agent, none):
             await _say(city, citizen, none)
@@ -1053,8 +1168,13 @@ async def _advance_alone(
     if taken and not replacing:
         return
     page, pages = _page(world)
-    if page < pages and page < _MAX_PAGE and not _asked(chat, agent, procedure, page + 1):
-        await _say(city, LEDGER, f"world procedure={procedure} page={page + 1}")
+    if page < pages and page < _MAX_PAGE:
+        if not _asked(chat, agent, procedure, page + 1):
+            await _say(city, LEDGER, f"world procedure={procedure} page={page + 1}")
+        return
+    # Our ASST has nothing that fits: ask the ring partners (approach A).
+    if not fits and fixed is None and priority != "P":
+        await _ask_partners(city, chat, agent, citizen, procedure, priority, key)
 
 
 async def _on_confirm(
