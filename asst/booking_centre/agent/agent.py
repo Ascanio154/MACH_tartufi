@@ -13,11 +13,21 @@ import logging
 import os
 import re
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from city_sdk.city import LEDGER, CapError, City, Message, Need, OutOfScope, clinical, understood
+from city_sdk.city import (
+    LEDGER,
+    CapError,
+    City,
+    Message,
+    Need,
+    OutOfScope,
+    Peer,
+    clinical,
+    understood,
+)
 
 ROLES = ("booking_centre", "gp", "hospital", "specialist_care", "family_counseling")
 _MAX_PAGE = 8
@@ -83,6 +93,27 @@ _NO_OTHER_IT = (
     "la struttura è temporaneamente non raggiungibile."
 )
 _NO_OTHER_EN = "No other slot is available right now: the facility is temporarily unreachable."
+# Cross-ASST: the ring partner may have what our ASST lacks. The search carries only these
+# criteria; no citizen data leaves before the cross_asst consent.
+_PARTNER_CAPABILITY = {
+    "VIS-FIS": "hospital.physiatry",
+    "VIS-CARD": "specialist_care.cardiology",
+    "CTRL-CARD": "specialist_care.cardiology",
+}
+_MAX_PARTNERS = 3
+_PARTNER_ASK_IT = "Nella nostra ASST non ci sono posti adatti: sto chiedendo alle ASST vicine."
+_PARTNER_ASK_EN = "No suitable slot in our ASST: I am asking the nearby ASSTs."
+_PARTNER_LEAD_IT = "Questi posti sono in un'altra ASST della rete."
+_PARTNER_LEAD_EN = "These appointments are at a partner ASST."
+_CROSS_ASK_IT = (
+    "Per prenotare in un'altra ASST mi serve il suo consenso a condividere con quella "
+    "struttura i dati necessari."
+)
+_CROSS_ASK_EN = (
+    "To book at another ASST I need your consent to share the necessary data with that facility."
+)
+_CROSS_NO_IT = "Va bene, non condivido i suoi dati con l'altra ASST."
+_CROSS_NO_EN = "All right, I won't share your data with the other ASST."
 # Rule P1: a prescription is valid for 2 agenda days after it is issued.
 _RX_VALID_DAYS = 2
 _RENEW_IT = (
@@ -652,6 +683,98 @@ async def _ask_renewal(
         entry.offers.add(mark)
 
 
+def _own_facilities(chat: list[Message]) -> set[str]:
+    """Our ASST's facilities: every ``facility=`` in the Ledger's slot lines."""
+
+    found: set[str] = set()
+    for row in chat:
+        if row.sender != LEDGER or first_word(row.text) != "slots":
+            continue
+        for line in row.text.splitlines():
+            facility = fields_of(line).get("facility") if "slot_id=" in line else None
+            if facility:
+                found.add(facility)
+    return found
+
+
+def _district(chat: list[Message]) -> int | None:
+    """The citizen's ``area.district``, if it is a number."""
+
+    for row in chat:
+        if row.sender.startswith("citizen:"):
+            raw = fields_of(row.text).get("area.district", "")
+            if raw.isdigit():
+                return int(raw)
+    return None
+
+
+async def _partner_peers(
+    city: City, procedure: str, ours: set[str], district: int | None
+) -> list[Peer]:
+    """Partner facilities for ``procedure`` from the Index: never ours, the citizen's district first."""
+
+    capability = _PARTNER_CAPABILITY.get(procedure, "")
+    if not capability:
+        return []
+    try:
+        found = await city.find(capability)
+    except CapError:
+        return []
+    # find(capability) already filters by capability; drop only a peer that lists others.
+    keep = [
+        peer
+        for peer in found
+        if peer.agent_id not in ours
+        and (not peer.capabilities or capability in tuple(peer.capabilities))
+    ]
+    keep.sort(key=lambda peer: district is None or peer.district != district)
+    return keep
+
+
+async def _ask_partners(
+    city: City,
+    chat: list[Message],
+    agent: str,
+    citizen: str,
+    procedure: str | None,
+    priority: str | None,
+    key: str,
+    avoid: str | None = None,
+) -> bool:
+    """Search criteria to up to three partner facilities, once per case. True when asked."""
+
+    request_id = f"x-{key}"
+    token = f"request_id={request_id}"
+    entry = _sent(key)
+    asked = {
+        row.recipient
+        for row in chat
+        if row.sender == agent and "need.request" in words(row.text) and token in row.text.split()
+    } | {mark.partition(":")[2] for mark in entry.offers if mark.startswith("partner:")}
+    if asked and avoid is None:
+        return True
+    capability = _PARTNER_CAPABILITY.get(procedure or "", "")
+    if not capability or not procedure:
+        return False
+    ours = _own_facilities(chat) | asked | ({avoid} if avoid else set())
+    parts = ["need.request", f"service_type={capability}", f"procedure={procedure}"]
+    if priority:
+        parts.append(f"priority={priority}")
+    parts.append(token)
+    sent_now = False
+    for peer in (await _partner_peers(city, procedure, ours, _district(chat)))[:_MAX_PARTNERS]:
+        if await _send(city, peer.agent_id, " ".join(parts)) is None:
+            entry.offers.add(f"partner:{peer.agent_id}")
+            sent_now = True
+    if not sent_now:
+        return bool(asked - ({avoid} if avoid else set()))
+    notice = _PARTNER_ASK_IT if _lang(chat) == "it" else _PARTNER_ASK_EN
+    if "partner-notice" not in entry.offers and not _exact(chat, agent, notice):
+        if await _say(city, citizen, notice):
+            entry.offers.add("partner-notice")
+    return True
+
+
 def _latest_slots(chat: list[Message]) -> str | None:
     found: str | None = None
     for row in chat:
@@ -892,6 +1015,17 @@ async def _desk(
     if "cancel" in kind and message.sender.startswith("agent:"):
         await _partner_cancel(city, message, chat, fixed=fixed)
         return
+    if "offer" in kind and message.sender.startswith("agent:"):
+        key = message.need_id or message.msg_id
+        await _locked(key, lambda: _on_partner_offer(city, message, chat))
+        return
+    if (
+        message.sender.startswith("citizen:")
+        and "prescription_number=" not in message.text
+        and _open_cross_ask(chat, city.agent_id)
+    ):
+        await _on_cross_consent(city, message, chat)
+        return
     if message.sender == LEDGER or message.sender.startswith("citizen:"):
         await _advance(city, message, chat, fixed=fixed, replacing=False)
 
@@ -906,19 +1040,135 @@ async def _advance(
     avoid: str | None = None,
 ) -> None:
     key = message.need_id or message.msg_id
+    await _locked(
+        key,
+        lambda: _advance_alone(
+            city, message, chat, key, fixed=fixed, replacing=replacing, avoid=avoid
+        ),
+    )
+
+
+async def _locked(key: str, work: Callable[[], Awaitable[None]]) -> None:
+    """Run ``work`` alone for this need: turns of one need run at the same time."""
+
     gate = _GATES.get(key)
     if gate is None:
         gate = _GATES[key] = _Gate()
     gate.turns += 1
     try:
         async with gate.lock:
-            await _advance_alone(
-                city, message, chat, key, fixed=fixed, replacing=replacing, avoid=avoid
-            )
+            await work()
     finally:
         gate.turns -= 1
         if gate.turns == 0 and _GATES.get(key) is gate:
             del _GATES[key]
+
+
+def _partner_offers_in(text: str, default_facility: str) -> list[dict[str, str]]:
+    """Every offer in a partner's message, one per line or several on one line."""
+
+    found: list[dict[str, str]] = []
+    current: dict[str, str] | None = None
+    for token in text.replace(",", " ").split():
+        key, eq, value = token.strip(";:!?()\"'").partition("=")
+        value = value.strip(".,;:!?")
+        if not eq or not key or not value:
+            continue
+        if key == "offer_id":
+            if current is not None:
+                found.append(current)
+            current = {"offer_id": value}
+        elif current is not None and key not in current:
+            current[key] = value
+    if current is not None:
+        found.append(current)
+    for offer in found:
+        offer.setdefault("facility", default_facility)
+    return [offer for offer in found if offer.get("slot_id")]
+
+
+def _partner_line(
+    slot: dict[str, str], offer_id: str, number: str | None, priority: str | None
+) -> str:
+    parts = [
+        "offer",
+        f"offer_id={offer_id}",
+        f"slot_id={slot['slot_id']}",
+        f"doctor_id={slot['doctor_id']}",
+        f"facility={slot['facility']}",
+        f"procedure={slot['procedure']}",
+        f"agenda_date={slot['at']}",
+        f"agenda_day={slot['day']}",
+        f"expiry={slot['at']}",
+    ]
+    if priority:
+        parts.append(f"priority={priority}")
+    if number:
+        parts.append(f"prescription_number={number}")
+    return " ".join(parts)
+
+
+async def _on_partner_offer(city: City, message: Message, chat: list[Message]) -> None:
+    """A partner facility's slots: filter them for this citizen, offer them in ONE message."""
+
+    agent = city.agent_id
+    citizen = _citizen(chat)
+    ours = _own_facilities(chat)
+    number = _number(chat)
+    if citizen is None or not number or message.sender in ours:
+        return
+    row = _rx_line(chat, agent, number)
+    reply = {} if row is None else fields_of(row.text)
+    procedure, priority = reply.get("procedure"), reply.get("priority")
+    agenda = _ledger(chat, "agenda")
+    now = _when("" if agenda is None else agenda.get("agenda_now", ""))
+    if not procedure or now is None:
+        return
+    key = message.need_id or message.msg_id
+    sent = _sent(f"{key}|{number}")
+    if "partner-offered" in sent.offers:
+        return
+    lines: list[str] = []
+    offer_ids: dict[str, str] = {}
+    for offer in _partner_offers_in(message.text, message.sender):
+        if offer["facility"] in ours:
+            continue
+        raw_day = (offer.get("agenda_day") or offer.get("day", "")).lower()
+        day = _DAY_KEYS.get(raw_day[:3], raw_day)
+        at = offer.get("agenda_date") or offer.get("at", "")
+        lines.append(
+            f"slot_id={offer['slot_id']} doctor_id={offer.get('doctor_id', '')} "
+            f"facility={offer['facility']} procedure={offer.get('procedure', procedure)} "
+            f"at={at} day={day}"
+        )
+        offer_ids[offer["slot_id"]] = offer["offer_id"]
+    taken = _offered(chat, agent, number) | sent.offers
+    fits = [
+        slot
+        for slot in fitting(
+            lines,
+            now=now,
+            priority=priority,
+            lang=_lang(chat),
+            gender=_gender(chat),
+            procedure=procedure,
+        )
+        if slot["slot_id"] not in taken
+    ]
+    if not fits:
+        return
+    lead = _PARTNER_LEAD_IT if _lang(chat) == "it" else _PARTNER_LEAD_EN
+    rows: list[str] = []
+    for slot in _pick(fits, _days(chat)):
+        line = _partner_line(slot, offer_ids[slot["slot_id"]], number, priority)
+        if len("\n".join([*rows, line, lead])) > _MAX_TEXT:
+            break
+        rows.append(line)
+    text = "\n".join([*rows, lead])
+    if await _say(city, citizen, text):
+        sent.offers.add("partner-offered")
+        for offer in _offers_in(text):
+            sent.offers.add(offer["slot_id"])
 
 
 async def _advance_alone(
@@ -1023,21 +1273,26 @@ async def _advance_alone(
         taken = _withdrawn(chat, agent) | sent.again
     else:
         taken = _offered(chat, agent, number) | sent.offers
+    fits = fitting(
+        [line for line in world.splitlines() if "slot_id=" in line],
+        now=now,
+        priority=priority,
+        lang=_lang(chat),
+        gender=_gender(chat),
+        facility=agent if fixed == "CONS-GIN" else None,
+        procedure=procedure,
+    )
     chosen = [
         slot
-        for slot in fitting(
-            [line for line in world.splitlines() if "slot_id=" in line],
-            now=now,
-            priority=priority,
-            lang=_lang(chat),
-            gender=_gender(chat),
-            facility=agent if fixed == "CONS-GIN" else None,
-            procedure=procedure,
-        )
+        for slot in fits
         if slot.get("slot_id") not in taken and slot.get("facility") != avoid
     ]
     if avoid and not chosen:
-        # The facility is unreachable and nothing else fits here: say so instead of silence.
+        # The facility is unreachable and nothing else fits here: a partner ASST may have it.
+        if fixed is None and await _ask_partners(
+            city, chat, agent, citizen, procedure, priority, key, avoid=avoid
+        ):
+            return
         none = _NO_OTHER_IT if _lang(chat) == "it" else _NO_OTHER_EN
         if not _exact(chat, agent, none):
             await _say(city, citizen, none)
@@ -1053,8 +1308,13 @@ async def _advance_alone(
     if taken and not replacing:
         return
     page, pages = _page(world)
-    if page < pages and page < _MAX_PAGE and not _asked(chat, agent, procedure, page + 1):
-        await _say(city, LEDGER, f"world procedure={procedure} page={page + 1}")
+    if page < pages and page < _MAX_PAGE:
+        if not _asked(chat, agent, procedure, page + 1):
+            await _say(city, LEDGER, f"world procedure={procedure} page={page + 1}")
+        return
+    # Our ASST has nothing that fits: ask the ring partners (approach A).
+    if not fits and fixed is None and priority != "P":
+        await _ask_partners(city, chat, agent, citizen, procedure, priority, key)
 
 
 async def _on_confirm(
@@ -1088,9 +1348,120 @@ async def _on_confirm(
         return
     if not facility or not citizen:
         return
+    offer_id = offer_id or offer.get("offer_id", "")
+    if facility not in _own_facilities(chat) and not offer_id.startswith("of-"):
+        # A partner ASST's slot: no citizen data leaves before the cross_asst consent (P2).
+        ref = _cross_consent_ref(chat, citizen)
+        if not ref:
+            await _ask_cross_consent(city, chat, agent, citizen, offer_id)
+            return
+        consent = ref
+    await _forward_confirm(
+        city,
+        message,
+        chat,
+        offer_id=offer_id,
+        slot=slot,
+        citizen=citizen,
+        consent=consent,
+        facility=facility,
+        number=number,
+    )
+
+
+def _cross_consent_ref(chat: list[Message], citizen: str) -> str:
+    """The citizen's latest cross_asst consent reference, if they gave one."""
+
+    ref = ""
+    for row in chat:
+        if row.sender != citizen or "purpose=cross_asst" not in row.text.split():
+            continue
+        ref = fields_of(row.text).get("consent_ref", ref)
+    return ref
+
+
+def _open_cross_ask(chat: list[Message], agent: str) -> str:
+    """The offer of our latest cross_asst consent question that is still unanswered."""
+
+    open_id = ""
+    for row in chat:
+        if row.sender != agent:
+            continue
+        fields = fields_of(row.text)
+        if first_word(row.text) == "consent" and "purpose=cross_asst" in row.text.split():
+            open_id = fields.get("offer_id", "")
+        elif open_id and fields.get("offer_id") == open_id and (
+            first_word(row.text) in ("confirm", "cancel")
+        ):
+            open_id = ""
+    return open_id
+
+
+async def _ask_cross_consent(
+    city: City, chat: list[Message], agent: str, citizen: str, offer_id: str
+) -> None:
+    """Ask once per offer for the consent a cross-ASST hold needs."""
+
+    token = f"offer_id={offer_id}"
+    if any(
+        row.sender == agent
+        and first_word(row.text) == "consent"
+        and "purpose=cross_asst" in row.text.split()
+        and token in row.text.split()
+        for row in chat
+    ):
+        return
+    sentence = _CROSS_ASK_IT if _lang(chat) == "it" else _CROSS_ASK_EN
+    await _say(city, citizen, f"consent purpose=cross_asst {token} {sentence}")
+
+
+async def _on_cross_consent(city: City, message: Message, chat: list[Message]) -> None:
+    """The citizen answered our cross_asst question: forward with the ref, or drop on a no."""
+
+    agent = city.agent_id
+    offer_id = _open_cross_ask(chat, agent)
+    if not offer_id:
+        return
+    offer = _our_offer(chat, agent, offer_id)
+    citizen = message.sender
+    ref = fields_of(message.text).get("consent_ref", "")
+    if ref:
+        await _forward_confirm(
+            city,
+            message,
+            chat,
+            offer_id=offer_id,
+            slot=offer.get("slot_id", ""),
+            citizen=citizen,
+            consent=ref,
+            facility=offer.get("facility", ""),
+            number=offer.get("prescription_number") or _number(chat),
+        )
+        return
+    if not _we(chat, agent, f"offer_id={offer_id}", to=citizen, word="cancel"):
+        sentence = _CROSS_NO_IT if _lang(chat) == "it" else _CROSS_NO_EN
+        await _say(city, citizen, f"cancel offer_id={offer_id} reason=consent_declined {sentence}")
+
+
+async def _forward_confirm(
+    city: City,
+    message: Message,
+    chat: list[Message],
+    *,
+    offer_id: str,
+    slot: str,
+    citizen: str,
+    consent: str,
+    facility: str,
+    number: str | None,
+) -> None:
+    """Send the citizen's choice to the facility that holds the slot; tell them if it fails."""
+
+    agent = city.agent_id
+    if not slot or not facility or not consent:
+        return
     if _we(chat, agent, f"slot_id={slot}", to=facility, word="confirm"):
         return
-    offer_id = offer_id or offer.get("offer_id", "")
     parts = [
         "confirm",
         f"offer_id={offer_id}",

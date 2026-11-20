@@ -61,6 +61,10 @@ class FakeCity:
     async def history(self, need_id: str | None = None) -> list[Message]:
         return list(self.chat)
 
+    async def find(self, query: str) -> list:
+        # No partner ASSTs in these tests: the Index returns nobody.
+        return []
+
     def sent_to(self, to: str) -> list[str]:
         return [text for target, text in self.attempts if target == to and target not in self.down]
 

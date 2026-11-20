@@ -938,8 +938,124 @@ async def _facility(
         await _on_reported(city, message, chat)
     elif "checkin" in kind and message.sender.startswith("citizen:"):
         await _on_checkin(city, message, chat, reports=reports)
+    elif message.sender.startswith("agent:") and first_word(message.text) == "need.request":
+        await _answer_partner(city, message, chat)
     elif "confirm" in kind:
         await _on_confirm(city, message, chat, hold_self=hold_self)
+
+
+# --- partner ASSTs (cross-ASST) -----------------------------------------------------------------
+# Another ASST's booking centre asks for slots with search criteria only. We answer with ONE
+# offer message of our own free slots; its later ``confirm`` goes through _on_confirm (hold,
+# commit with its consent_ref, receipt back to it). Same block in hospital and specialist.
+_PARTNER_MAX = 6
+
+
+def _partner_slots(
+    lines: list[str], *, now: datetime, priority: str | None, facility: str, procedure: str
+) -> list[dict[str, str]]:
+    """Our free slots inside the priority window, spread over doctors and days, at most six."""
+
+    if priority == "U":
+        horizon: datetime | None = now.replace(hour=23, minute=59, second=59, microsecond=0)
+    elif priority == "P":
+        horizon = None
+    else:
+        horizon = now + timedelta(days=_DEADLINE_DAYS.get(priority or "", 14))
+    earliest = now + _LEAD
+    timed: list[tuple[datetime, dict[str, str]]] = []
+    for line in lines:
+        slot = fields_of(line)
+        at = _when(slot.get("at", ""))
+        if not slot.get("slot_id") or not slot.get("doctor_id") or at is None:
+            continue
+        if slot.get("facility") != facility or slot.get("procedure") not in (None, procedure):
+            continue
+        free = slot.get("free")
+        if free is not None and free.isdigit() and int(free) <= 0:
+            continue
+        if slot.get("urgent_reserve", "").lower() == "true" and priority != "U":
+            continue
+        if not earliest < at or (horizon is not None and at >= horizon):
+            continue
+        timed.append((at, slot))
+    timed.sort(key=lambda item: (item[0], item[1]["slot_id"]))
+    first: list[dict[str, str]] = []
+    rest: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for _, slot in timed:
+        pair = (slot["doctor_id"], slot.get("day", ""))
+        (rest if pair in seen else first).append(slot)
+        seen.add(pair)
+    return (first + rest)[:_PARTNER_MAX]
+
+
+async def _answer_partner(city: City, message: Message, chat: list[Message]) -> None:
+    """One offer message (or a cancel) for a partner booking centre's ``need.request``."""
+
+    agent = city.agent_id
+    fields = fields_of(message.text)
+    procedure = fields.get("procedure", "")
+    request_id = fields.get("request_id", "")
+    priority = fields.get("priority")
+    partner = message.sender
+    if not procedure or not request_id:
+        return
+    token = f"request_id={request_id}"
+    if any(
+        row.sender == agent and row.recipient == partner and token in row.text.split()
+        for row in chat
+    ):
+        return
+    if _latest_slots(chat) is None and not any(
+        row.sender == agent and row.recipient == LEDGER and first_word(row.text) == "world"
+        for row in chat
+    ):
+        await _say(city, LEDGER, f"world procedure={procedure} page=1")
+    if _ledger(chat, "agenda") is None and not _exact(chat, agent, "agenda"):
+        await _say(city, LEDGER, "agenda")
+    chat = await _until(
+        city,
+        message.need_id,
+        chat,
+        lambda rows: _latest_slots(rows) is not None and _ledger(rows, "agenda") is not None,
+    )
+    world = _latest_slots(chat)
+    agenda = _ledger(chat, "agenda")
+    now = _when("" if agenda is None else agenda.get("agenda_now", ""))
+    if world is None or now is None:
+        return
+    slots = _partner_slots(
+        [line for line in world.splitlines() if "slot_id=" in line],
+        now=now,
+        priority=priority,
+        facility=agent,
+        procedure=procedure,
+    )
+    if not slots:
+        await _say(city, partner, f"cancel {token} reason=no_slots")
+        return
+    rows: list[str] = []
+    for slot in slots:
+        parts = [
+            "offer",
+            f"offer_id=p-{slot['slot_id']}",
+            f"slot_id={slot['slot_id']}",
+            f"doctor_id={slot['doctor_id']}",
+            f"facility={agent}",
+            f"procedure={procedure}",
+            f"agenda_date={slot['at']}",
+            f"agenda_day={slot.get('day', '')}",
+            f"expiry={slot['at']}",
+        ]
+        if priority:
+            parts.append(f"priority={priority}")
+        parts.append(token)
+        line = " ".join(parts)
+        if len("\n".join([*rows, line])) > 2000:
+            break
+        rows.append(line)
+    await _say(city, partner, "\n".join(rows))
 
 
 def _booking_of(chat: list[Message], agent: str, slot_id: str) -> tuple[str, str, str | None]:
