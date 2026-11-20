@@ -110,12 +110,17 @@ class AnswerPartner(unittest.IsolatedAsyncioTestCase):
             self.assertIn(f"facility={HOSP}", tokens)
             self.assertIn("request_id=x-1", tokens)
             self.assertTrue(any(tok.startswith("offer_id=p-") for tok in tokens))
+            self.assertTrue(any(tok.startswith("doctor_lang=") for tok in tokens))
+            self.assertTrue(any(tok.startswith("doctor_gender=") for tok in tokens))
+        h3 = next(row for row in rows if "slot_id=H-3" in row.split())
+        self.assertIn("doctor_lang=it/si", h3.split())
+        self.assertIn("doctor_gender=m", h3.split())
 
     async def test_no_slot_cancel(self) -> None:
         late = [hslot("H-4", "h2", "2026-11-25T09:00:00+01:00", "wed")]
         city = FacilityCity(HOSP, facility_chat(HOSP, late))
         await run(hospital, city)
-        self.assertEqual(city.sent_to(PBC), ["cancel request_id=x-1 reason=no_slots"])
+        self.assertEqual(city.sent_to(PBC), ["cancel request_id=x-1 reason=no_availability"])
 
     async def test_answered_once(self) -> None:
         city = FacilityCity(HOSP, facility_chat(HOSP, HOSP_SLOTS))
