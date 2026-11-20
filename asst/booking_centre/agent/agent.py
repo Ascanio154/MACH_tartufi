@@ -61,6 +61,21 @@ _PULL_TRIES = 24
 _PULL_PAUSE = 0.25
 # Needs whose sent offers this process remembers; the oldest is forgotten first.
 _SENT_NEEDS = 4096
+# Every slot goes in ONE offer message: the citizen chooses in that turn, and a later message
+# does not enter a choice already made. A citizen message holds at most 2000 characters.
+_MAX_OFFERS = 6
+_MAX_TEXT = 2000
+_OFFER_IT = "Ecco gli appuntamenti disponibili: mi indichi l'offer_id che preferisce."
+_OFFER_EN = "Here are the available appointments: tell me the offer_id you prefer."
+# Citizen ``days=`` in English or Italian, keyed by the first three letters.
+_DAY_KEYS = {
+    "mon": "mon", "lun": "mon",
+    "tue": "tue", "mar": "tue",
+    "wed": "wed", "mer": "wed",
+    "thu": "thu", "gio": "thu",
+    "fri": "fri", "ven": "fri",
+}
+_DAYS_RE = re.compile(r"\bdays=(\S+)", re.IGNORECASE)
 
 
 def role_of() -> str:
@@ -522,14 +537,25 @@ def _asked(chat: list[Message], agent: str, procedure: str, page: int) -> bool:
     return False
 
 
+def _offers_in(text: str) -> list[dict[str, str]]:
+    """One field map per ``offer`` line: one message carries every offered slot."""
+
+    return [
+        fields_of(line)
+        for line in text.splitlines()
+        if first_word(line) == "offer" and "offer_id=" in line
+    ]
+
+
 def _offered(chat: list[Message], agent: str) -> set[str]:
     found: set[str] = set()
     for row in chat:
-        if row.sender != agent or "offer" not in words(row.text):
+        if row.sender != agent:
             continue
-        slot = fields_of(row.text).get("slot_id")
-        if slot:
-            found.add(slot)
+        for offer in _offers_in(row.text):
+            slot = offer.get("slot_id")
+            if slot:
+                found.add(slot)
     return found
 
 
@@ -538,13 +564,13 @@ def _withdrawn(chat: list[Message], agent: str) -> set[str]:
 
     by_offer: dict[str, str] = {}
     for row in chat:
-        if row.sender != agent or "offer" not in words(row.text):
+        if row.sender != agent:
             continue
-        fields = fields_of(row.text)
-        offer_id = fields.get("offer_id")
-        slot = fields.get("slot_id")
-        if offer_id and slot:
-            by_offer[offer_id] = slot
+        for offer in _offers_in(row.text):
+            offer_id = offer.get("offer_id")
+            slot = offer.get("slot_id")
+            if offer_id and slot:
+                by_offer[offer_id] = slot
     dropped: set[str] = set()
     for row in chat:
         if "cancel" not in words(row.text):
@@ -583,6 +609,53 @@ def _gender(chat: list[Message]) -> str | None:
     return None
 
 
+def _days(chat: list[Message]) -> set[str]:
+    """Days the citizen prefers (``days=mon/wed``, any case, English or Italian)."""
+
+    found: set[str] = set()
+    for row in chat:
+        if not row.sender.startswith("citizen:"):
+            continue
+        for raw in _DAYS_RE.findall(row.text):
+            for part in re.split(r"[/,;|]+", raw.lower()):
+                key = _DAY_KEYS.get(part.strip(".:!?()\"'")[:3])
+                if key:
+                    found.add(key)
+    return found
+
+
+def _pick(slots: list[dict[str, str]], days: set[str], limit: int = _MAX_OFFERS) -> list[dict[str, str]]:
+    """Preferred days first, then one slot per doctor and day before any repeat."""
+
+    order = sorted(
+        slots,
+        key=lambda s: (bool(days) and s.get("day") not in days, s.get("at", ""), s.get("slot_id", "")),
+    )
+    first: list[dict[str, str]] = []
+    rest: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for slot in order:
+        key = (slot.get("doctor_id", ""), slot.get("day", ""))
+        (rest if key in seen else first).append(slot)
+        seen.add(key)
+    return (first + rest)[:limit]
+
+
+def _offer_block(
+    slots: list[dict[str, str]], number: str | None, priority: str | None, lang: str
+) -> str:
+    """One message, one ``offer`` line per slot, kept under the citizen text limit."""
+
+    sentence = _OFFER_IT if lang == "it" else _OFFER_EN
+    lines: list[str] = []
+    for slot in slots[:_MAX_OFFERS]:
+        line = _offer_line(slot, number, priority)
+        if len("\n".join([*lines, line, sentence])) > _MAX_TEXT:
+            break
+        lines.append(line)
+    return "\n".join([*lines, sentence])
+
+
 def _offer_line(slot: dict[str, str], number: str | None, priority: str | None) -> str:
     parts = [
         "offer",
@@ -603,10 +676,12 @@ def _offer_line(slot: dict[str, str], number: str | None, priority: str | None) 
 
 
 def _our_offer(chat: list[Message], agent: str, offer_id: str) -> dict[str, str]:
-    token = f"offer_id={offer_id}"
     for row in chat:
-        if row.sender == agent and token in row.text.split() and "offer" in words(row.text):
-            return fields_of(row.text)
+        if row.sender != agent:
+            continue
+        for offer in _offers_in(row.text):
+            if offer.get("offer_id") == offer_id:
+                return offer
     return {}
 
 
@@ -805,11 +880,12 @@ async def _advance_alone(
         if slot.get("slot_id") not in taken
     ]
     if chosen:
-        for slot in chosen[:3]:
-            if await _say(city, citizen, _offer_line(slot, number, priority)):
-                sent.offers.add(slot["slot_id"])
+        text = _offer_block(_pick(chosen, _days(chat)), number, priority, _lang(chat))
+        if await _say(city, citizen, text):
+            for offer in _offers_in(text):
+                sent.offers.add(offer["slot_id"])
                 if replacing:
-                    sent.again.add(slot["slot_id"])
+                    sent.again.add(offer["slot_id"])
         return
     if taken and not replacing:
         return
