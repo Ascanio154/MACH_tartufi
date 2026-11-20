@@ -9,6 +9,7 @@ citizens read the act word and ``key=value`` tokens (ADR-110).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import re
@@ -1133,6 +1134,12 @@ async def _family_note(
     offer_id: str = "", booking_id: str = "", consent: bool = False,
 ) -> None:
     phrases = {
+        "index_unavailable": ("Non riesco a verificare le altre strutture. Nessuna prenotazione è confermata.",
+                              "I cannot check other facilities right now. No booking is confirmed."),
+        "partner_pending": ("Sto aspettando la verifica della struttura. La prenotazione non è ancora confermata.",
+                            "I am waiting for the facility's verification. Your booking is not confirmed yet."),
+        "cross_consent_declined": ("Rispetto la tua scelta: non invio i tuoi dati all'altra struttura e non effettuo la prenotazione esterna.",
+                                   "I respect your choice: I will not send your details to the other facility or book there."),
         "ledger_timeout": ("Sto aspettando la verifica. La prenotazione non è ancora confermata.",
                            "I am waiting for verification. Your booking is not confirmed yet."),
         "history_unavailable": ("Non riesco a recuperare la pratica. Non posso ancora confermare l'operazione.",
@@ -1265,7 +1272,13 @@ async def _family_receipt(city: City, state: _FamilyCase, citizen: str) -> bool:
 
 async def _family_turn(city: City, message: Message, state: _FamilyCase) -> None:
     citizen = _citizen(state.rows)
-    if citizen is None or message.sender not in (citizen, LEDGER):
+    if citizen is None:
+        return
+    if any(row.sender == city.agent_id and _family_head(row) == "escalate.emergency" for row in state.rows):
+        return
+    if await _family_cross_event(city, state, citizen, message):
+        return
+    if message.sender not in (citizen, LEDGER):
         return
     if message.sender == LEDGER and _family_head(message) not in {
         "agenda", "slots", "world", "rules", "held", "committed", "refused", "checked_in"
@@ -1318,6 +1331,10 @@ async def _family_turn(city: City, message: Message, state: _FamilyCase) -> None
         if not withdrawn and (reply is None or _family_head(reply) == "held"):
             await _family_book(city, state, citizen, pending)
             return
+    remote = _family_cross_catalog(state, city.agent_id).get(offer_id)
+    if remote is not None and offer_id not in cancelled:
+        await _family_cross_confirm(city, state, citizen, remote, selected)
+        return
     if selected and offer_id not in cancelled:
         if (not offer or offer.get("facility") != city.agent_id
             or any(selected.get(k, offer.get(k)) != offer.get(k) for k in ("slot_id", "facility"))):
@@ -1548,10 +1565,7 @@ async def _family_offers(
                   if prefs.get("lang") == "en" else
                   "Non risultano slot nei giorni preferiti; puoi valutare queste alternative.")
     if not chosen:
-        phrase = ("I found no available appointments matching this search. No booking has been made."
-                  if prefs.get("lang") == "en" else
-                  "Non ho trovato appuntamenti disponibili per questa ricerca. Nessuna prenotazione è stata effettuata.")
-        await _family_send(city, state, citizen, "offer available=false reason=no_matching_slots\n" + phrase)
+        await _family_cross_search(city, state, citizen, message, now)
         return
     location = _family_location(city, english=prefs.get("lang") == "en")
     if location:
@@ -1566,6 +1580,309 @@ async def _family_offers(
         await _family_send(city, state, citizen, "\n".join([*batch, phrase]))
     else:
         await _family_note(city, state, citizen, "offer_too_large")
+
+
+# --- direct-access partner discovery ------------------------------------------------------------
+
+_FAMILY_CAPABILITY = "family_counseling.gynecology"
+_FAMILY_FIND_TIMEOUT = 3.0
+_FAMILY_MAX_PARTNERS = 3
+
+
+def _family_cross_hash(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:20]
+
+
+def _family_cross_marker(state: _FamilyCase, agent: str, key: str) -> str:
+    return next((_family_fields(row).get("value", "") for row in reversed(state.rows)
+                 if row.sender == agent and row.recipient == LEDGER
+                 and first_word(row.text) == "remember" and _family_fields(row).get("key") == key), "")
+
+
+def _family_cross_requests(state: _FamilyCase, agent: str) -> dict[str, Message]:
+    return {row.recipient: row for row in state.rows
+            if row.sender == agent and row.recipient.startswith("agent:")
+            and _family_head(row) == "need.request"
+            and _family_fields(row).get("service_type") == _FAMILY_CAPABILITY
+            and _family_fields(row).get("procedure") == "CONS-GIN"}
+
+
+def _family_cross_catalog(state: _FamilyCase, agent: str) -> dict[str, dict[str, str]]:
+    """Only public offers from a facility we actually queried in this need."""
+    targets = _family_cross_requests(state, agent)
+    offers: dict[str, dict[str, str]] = {}
+    for row in state.rows:
+        if row.sender not in targets or row.recipient not in ("", agent):
+            continue
+        if state.rows.index(row) <= state.rows.index(targets[row.sender]):
+            continue
+        if _family_head(row) == "cancel":
+            fields = _family_fields(row)
+            offers = {key: value for key, value in offers.items()
+                      if not (value["facility"] == row.sender
+                              and fields.get("offer_id", value["partner_offer_id"]) == value["partner_offer_id"]
+                              and fields.get("slot_id", value["slot_id"]) == value["slot_id"])}
+            continue
+        for fields in _offer_rows(row.text):
+            if (fields.get("request_id", _family_fields(targets[row.sender]).get("request_id"))
+                != _family_fields(targets[row.sender]).get("request_id")):
+                continue
+            if (fields.get("facility") != row.sender or fields.get("procedure") != "CONS-GIN"
+                or not fields.get("offer_id") or not fields.get("slot_id") or not fields.get("doctor_id")
+                or fields.get("waiting_list", "false").lower() == "true"
+                or fields.get("urgent_reserve", "false").lower() == "true"):
+                continue
+            at = _when(fields.get("agenda_date", fields.get("at", "")))
+            if at is None or at.weekday() >= 5:
+                continue
+            day = _WEEKDAYS[at.weekday()]
+            if fields.get("agenda_day", fields.get("day", day)) != day:
+                continue
+            free = fields.get("free", "1").lower()
+            if free == "false" or (free.lstrip("-").isdigit() and int(free) <= 0):
+                continue
+            offer_id = "fx-" + _family_cross_hash(row.sender + "|" + fields["offer_id"] + "|" + fields["slot_id"])
+            offers[offer_id] = {"offer_id": offer_id, "partner_offer_id": fields["offer_id"],
+                                "slot_id": fields["slot_id"], "doctor_id": fields["doctor_id"],
+                                "facility": row.sender, "procedure": "CONS-GIN", "at": at.isoformat(), "day": day}
+    cancelled = {_family_fields(row).get("offer_id") for row in state.rows
+                 if row.sender == agent and _family_head(row) == "cancel"}
+    return {key: offer for key, offer in offers.items() if key not in cancelled}
+
+
+def _family_cross_line(offer: dict[str, str]) -> str:
+    return (f"offer offer_id={offer['offer_id']} slot_id={offer['slot_id']} "
+            f"doctor_id={offer['doctor_id']} facility={offer['facility']} procedure=CONS-GIN "
+            f"agenda_date={offer['at']} agenda_day={offer['day']}")
+
+
+async def _family_cross_search(
+    city: City, state: _FamilyCase, citizen: str, message: Message, now: datetime
+) -> None:
+    key = "family_discovery:" + _family_cross_hash(city.agent_id + "|" + (message.need_id or message.msg_id))
+    if not _family_cross_marker(state, city.agent_id, key):
+        # Persist the attempt before Index/Relay calls, so a restart does not repeat a 4xx.
+        if await _family_send(city, state, LEDGER, f"remember key={key} value=started") is None:
+            await _family_note(city, state, citizen, "index_unavailable")
+            return
+        reason = "no_partners"
+        try:
+            found = await asyncio.wait_for(city.find(_FAMILY_CAPABILITY), _FAMILY_FIND_TIMEOUT)
+        except (CapError, TimeoutError) as err:
+            _LOG.info("family.find.failed", extra={"code": getattr(err, "code", "timeout")})
+            found, reason = [], "index_unavailable"
+        peers = {peer.agent_id: peer for peer in found
+                 if peer.agent_id != city.agent_id and _FAMILY_CAPABILITY in peer.capabilities}
+        for target in sorted(peers)[:_FAMILY_MAX_PARTNERS]:
+            # Public criteria only: never citizen, prescription, address, language or profile.
+            query = (f"need.request service_type={_FAMILY_CAPABILITY} procedure=CONS-GIN "
+                     f"request_id=rq-{key.split(':', 1)[1]}")
+            if await _family_send(city, state, target, query) is not None:
+                reason = "partners_queried"
+        await _family_send(city, state, LEDGER, f"remember key={key} value={reason}")
+    requests = _family_cross_requests(state, city.agent_id)
+    if not requests:
+        reason = _family_cross_marker(state, city.agent_id, key)
+        if reason not in {"no_partners", "partners_queried"}:
+            await _family_note(city, state, citizen, "index_unavailable")
+            return
+    # A single bounded collection window; later replies never append another choice batch.
+    answered: set[str] = set()
+    for attempt in range(min(_PULL_TRIES, 8)):
+        try:
+            _family_merge(state, await city.history(need_id=message.need_id))
+        except CapError:
+            await _family_note(city, state, citizen, "history_unavailable")
+            return
+        answered = {row.sender for row in state.rows if row.sender in requests
+                    and _family_head(row) in {"offer", "cancel"}}
+        if answered == set(requests):
+            break
+        if attempt + 1 < min(_PULL_TRIES, 8):
+            await asyncio.sleep(_PULL_PAUSE)
+    last_cancel = max((i for i, row in enumerate(state.rows) if row.sender == city.agent_id
+                       and row.recipient == citizen and _family_head(row) == "cancel"), default=-1)
+    if any(i > last_cancel and row.sender == city.agent_id and row.recipient == citizen
+           and _family_head(row) == "offer" and any(o.get("offer_id", "").startswith("fx-")
+                                                    for o in _offer_rows(row.text))
+           for i, row in enumerate(state.rows)):
+        return
+    prefs = _family_preferences(state.rows, citizen)
+    days = _family_days(prefs.get("days", ""))
+    offers = [offer for offer in _family_cross_catalog(state, city.agent_id).values()
+              if _when(offer["at"]) > now]
+    offers.sort(key=lambda offer: (bool(days) and offer["day"] not in days, offer["at"], offer["offer_id"]))
+    if offers:
+        phrase = ("These appointments are at another facility. I will ask your permission before sharing booking details."
+                  if prefs.get("lang") == "en" else
+                  "Questi appuntamenti sono presso un'altra struttura. Prima di condividere i dati per prenotare ti chiederò il consenso.")
+        batch: list[str] = []
+        for offer in offers:
+            line = _family_cross_line(offer)
+            if len("\n".join([*batch, line, phrase])) > 2000:
+                break
+            batch.append(line)
+        if batch:
+            await _family_send(city, state, citizen, "\n".join([*batch, phrase]))
+        else:
+            await _family_note(city, state, citizen, "offer_too_large")
+        return
+    if set(requests) - answered:
+        await _family_note(city, state, citizen, "partner_pending")
+        return
+    phrase = ("I found no available appointments locally or among the contacted facilities. No booking has been made."
+              if prefs.get("lang") == "en" else
+              "Non ho trovato appuntamenti disponibili qui o tra le strutture contattate. Nessuna prenotazione è stata effettuata.")
+    await _family_send(city, state, citizen, "offer available=false reason=no_matching_slots\n" + phrase)
+
+
+def _family_cross_consent(
+    state: _FamilyCase, agent: str, citizen: str, offer_id: str, facility: str
+) -> tuple[str, bool]:
+    request = next((row for row in reversed(state.rows) if row.sender == agent and row.recipient == citizen
+                    and _family_head(row) == "data.request" and _family_fields(row).get("purpose") == "cross_asst"
+                    and _family_fields(row).get("offer_id") == offer_id
+                    and _family_fields(row).get("facility") == facility), None)
+    if request is None:
+        return "", False
+    for row in reversed(state.rows[state.rows.index(request) + 1:]):
+        if row.sender != citizen:
+            continue
+        fields = _family_fields(row)
+        if fields.get("offer_id", offer_id) != offer_id or fields.get("facility", facility) != facility:
+            continue
+        lowered = row.text.lower().strip()
+        denied = (fields.get("granted", fields.get("accepted", "")).lower() == "false"
+                  or re.search(r"\b(no|non acconsento|non autorizzo|rifiuto|decline|refuse|do not consent)\b", lowered))
+        if denied and fields.get("purpose", "cross_asst") == "cross_asst":
+            return "", True
+        if _family_head(row) in {"consent", "data.response", "confirm"} and fields.get("purpose") == "cross_asst":
+            ref = fields.get("consent_ref", "")
+            if ref.lower() not in {"", "none", "false", "null"}:
+                return ref, False
+    return "", False
+
+
+def _family_cross_forwards(state: _FamilyCase, agent: str) -> list[Message]:
+    targets = _family_cross_requests(state, agent)
+    return [row for row in state.rows if row.sender == agent and row.recipient in targets
+            and _family_head(row) == "confirm" and _family_fields(row).get("purpose") == "cross_asst"]
+
+
+def _family_cross_response(row: Message, request: Message) -> bool:
+    fields, wanted = _family_fields(row), _family_fields(request)
+    return (row.sender == request.recipient
+            and _family_head(row) in {"booking.receipt", "cancel"}
+            and all(fields.get(key, wanted.get(key)) == wanted.get(key) for key in ("offer_id", "slot_id", "facility")))
+
+
+def _family_cross_uncertain(state: _FamilyCase, agent: str) -> bool:
+    sent = {_family_cross_hash(row.text) for row in _family_cross_forwards(state, agent)}
+    keys = {_family_fields(row).get("key", "") for row in state.rows if row.sender == agent
+            and row.recipient == LEDGER and first_word(row.text) == "remember"
+            and _family_fields(row).get("key", "").startswith("family_forward:")}
+    return any(_family_cross_marker(state, agent, key) == "started" and key.split(":", 1)[1] not in sent
+               for key in keys)
+
+
+async def _family_cross_confirm(
+    city: City, state: _FamilyCase, citizen: str, offer: dict[str, str], selected: dict[str, str]
+) -> None:
+    oid, target = offer["offer_id"], offer["facility"]
+    shown = _our_offer(state.rows, city.agent_id, oid)
+    if (not shown or any(selected.get(key, shown.get(key)) != shown.get(key) for key in ("slot_id", "facility"))):
+        await _family_note(city, state, citizen, "invalid_offer")
+        return
+    consent, declined = _family_cross_consent(state, city.agent_id, citizen, oid, target)
+    if declined:
+        await _family_note(city, state, citizen, "cross_consent_declined")
+        return
+    if not consent:
+        english = _family_preferences(state.rows, citizen).get("lang") == "en"
+        phrase = ("May I share your citizen identifier and selected appointment with this facility to book it? Without permission I will not send them."
+                  if english else
+                  "Posso condividere con questa struttura il tuo identificativo cittadino e l'appuntamento scelto per prenotarlo? Senza consenso non li invio.")
+        await _family_send(city, state, citizen,
+                           f"data.request purpose=cross_asst fields=consent_ref offer_id={oid} facility={target}\n{phrase}")
+        return
+    # Refresh the clock after consent: do not send a now-expired offer to the partner.
+    clock = await _family_read(city, state, "agenda", "agenda", refresh=True)
+    now = _when("" if clock is None else _family_fields(clock).get("agenda_now", ""))
+    if now is None:
+        await _family_note(city, state, citizen, "ledger_timeout")
+        return
+    if _when(offer["at"]) <= now:
+        await _family_send(city, state, citizen, f"cancel offer_id={oid} reason=slot_expired")
+        await _family_cross_search(city, state, citizen, city.inbound, now)
+        return
+    command = (f"confirm offer_id={offer['partner_offer_id']} slot_id={offer['slot_id']} facility={target} "
+               f"citizen={citizen} consent_ref={consent} purpose=cross_asst")
+    key = "family_forward:" + _family_cross_hash(command)
+    if _family_cross_marker(state, city.agent_id, key):
+        await _family_note(city, state, citizen, "partner_pending")
+        return
+    if await _family_send(city, state, LEDGER, f"remember key={key} value=started") is None:
+        await _family_note(city, state, citizen, "ledger_timeout")
+        return
+    if await _family_send(city, state, target, command) is None:
+        code = state.failures.get((target, command), "UPSTREAM_TIMEOUT")
+        try:
+            permanent = 400 <= CapError(code).http_status() < 500
+        except CapError:
+            permanent = True
+        if permanent:
+            await _family_send(city, state, LEDGER, f"remember key={key} value=failed")
+            await _family_send(city, state, citizen, f"cancel offer_id={oid} reason=facility_unavailable")
+            await _family_cross_search(city, state, citizen, city.inbound, now)
+            return
+    await _family_note(city, state, citizen, "partner_pending")
+
+
+async def _family_cross_event(city: City, state: _FamilyCase, citizen: str, message: Message) -> bool:
+    forwards = _family_cross_forwards(state, city.agent_id)
+    for request in reversed(forwards):
+        responses = [row for row in state.rows[state.rows.index(request) + 1:]
+                     if _family_cross_response(row, request)]
+        receipt = next((row for row in reversed(responses) if _family_head(row) == "booking.receipt"
+                        and _family_fields(row).get("booking_id") and _family_fields(row).get("ledger_ref")), None)
+        if receipt is not None:
+            fields = _family_fields(receipt)
+            if message.sender == citizen and _family_head(message) == "checkin":
+                phrase = ("Your appointment is at the facility shown here; use these references to check in there."
+                          if _family_preferences(state.rows, citizen).get("lang") == "en" else
+                          "L'appuntamento è presso la struttura indicata qui: usa questi riferimenti per registrare lì il tuo arrivo.")
+                await _family_send(city, state, citizen,
+                    f"data.response purpose=checkin reason=external_facility facility={request.recipient} "
+                    f"booking_id={fields['booking_id']}\n{phrase}")
+            else:
+                await _family_send(city, state, citizen,
+                    f"booking.receipt booking_id={fields['booking_id']} ledger_ref={fields['ledger_ref']} facility={request.recipient}")
+            return True
+        cancel = next((row for row in responses if _family_head(row) == "cancel"), None)
+        if cancel is not None:
+            original = _family_fields(request)
+            oid = "fx-" + _family_cross_hash(request.recipient + "|" + original['offer_id'] + "|" + original['slot_id'])
+            reason = _family_fields(cancel).get("reason", "facility_cancelled")
+            reason = reason if re.fullmatch(r"[A-Za-z0-9_]{1,64}", reason) else "facility_cancelled"
+            await _family_send(city, state, citizen, f"cancel offer_id={oid} reason={reason}")
+            continue
+        # A successful send with no definitive reply is uncertain. Never book another slot.
+        await _family_note(city, state, citizen, "partner_pending")
+        return True
+    if _family_cross_uncertain(state, city.agent_id):
+        await _family_note(city, state, citizen, "partner_pending")
+        return True
+    if message.sender in _family_cross_requests(state, city.agent_id):
+        clock = await _family_read(city, state, "agenda", "agenda", refresh=True)
+        now = _when("" if clock is None else _family_fields(clock).get("agenda_now", ""))
+        if now is None:
+            await _family_note(city, state, citizen, "ledger_timeout")
+        else:
+            await _family_cross_search(city, state, citizen, message, now)
+        return True
+    return False
+
+
 
 
 async def _facility(
