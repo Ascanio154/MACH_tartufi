@@ -78,6 +78,32 @@ _MAX_OFFERS = 6
 _MAX_TEXT = 2000
 _OFFER_IT = "Ecco gli appuntamenti disponibili: mi indichi l'offer_id che preferisce."
 _OFFER_EN = "Here are the available appointments: tell me the offer_id you prefer."
+# Proactive tail on every offer: how to choose, what to bring, accessibility and mobility.
+_OFFER_HELP_IT = (
+    " Può anche scrivere semplicemente 'la prima', 'la seconda'. Porti con sé la ricetta e un "
+    "documento. Se ha esigenze di accessibilità (per esempio la carrozzina) me lo dica e lo "
+    "segnalo alla struttura; se può, la raggiunga con i mezzi pubblici."
+)
+_OFFER_HELP_EN = (
+    " You can also simply write 'the first one', 'the second one'. Please bring your referral "
+    "and an ID document. If you have accessibility needs (for example a wheelchair) tell me and "
+    "I will let the facility know; if you can, reach it by public transport."
+)
+_RELAXED_IT = (
+    "Non ho trovato posti con tutte le sue preferenze, né da noi né nelle ASST vicine. In "
+    "alternativa le propongo questi appuntamenti, con medici che parlano italiano; se non le "
+    "vanno bene, mi indichi altri giorni e riprovo."
+)
+_RELAXED_EN = (
+    "I found no slot matching all your preferences, here or at the nearby ASSTs. As an "
+    "alternative, here are these appointments with Italian-speaking doctors; if they don't suit "
+    "you, tell me other days and I will search again."
+)
+_ACCESS_WORDS = re.compile(
+    r"\b(carrozzina|sedia a rotelle|disabilit|non deambul|stampelle|deambulator|ascensore|"
+    r"wheelchair|disabilit|mobility|crutches|walker|non vedente|ipovedent|blind|sordo|deaf)",
+    re.IGNORECASE,
+)
 # Citizen ``days=`` in English or Italian, keyed by the first three letters.
 _DAY_KEYS = {
     "mon": "mon", "lun": "mon",

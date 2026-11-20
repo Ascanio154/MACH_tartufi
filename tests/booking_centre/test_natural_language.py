@@ -22,6 +22,7 @@ from tests.booking_centre.test_quick_wins import (
     booking_chat,
     msg,
     offer_lines,
+    reset_memory,
 )
 
 PARTNER = "agent:otherbc"
@@ -32,13 +33,7 @@ class _Fresh(unittest.IsolatedAsyncioTestCase):
         self.setUp()  # the brain keeps module globals: leave nothing for other test files
 
     def setUp(self) -> None:
-        for store in (bc._SENT, bc._GATES, bc._CROSS_ASKED, bc._LAST_OFFERS, bc._BOOK_ASKED,
-                      bc._PENDING, bc._CONFIRMED_BY):
-            store.clear()
-        for store in (bc._BOOKED,):
-            store.clear()
-        bc._RECEIPTS.clear()
-        bc._AGENT_NOTED.clear()
+        reset_memory()
 
 
 def plain_chat(first: str, **kwargs) -> list[Message]:
@@ -412,6 +407,82 @@ class LorenteggioFormat(_Fresh):
         sent = city.sent_to("agent:pfac")[0].split()
         self.assertIn("consent_ref=cx-77", sent)
         self.assertIn("cross_asst_consent_ref=cx-77", sent)
+
+
+class LogReport2343(_Fresh):
+    """Fixes from the 23:43 log report (journeys 104, 113, 116 and the LLM judge)."""
+
+    async def test_offer_sentence_is_proactive(self) -> None:
+        chat = booking_chat(citizen_extra="days=wed")
+        city = PartnerCity(chat)
+        await desk(city, chat[0])
+        text = to_citizen(city)[0]
+        self.assertIn("mercoledì", text)
+        self.assertIn("accessibilità", text)
+        self.assertIn("mezzi pubblici", text)
+        self.assertEqual(understood(msg(AGENT, text, CIT)).type, "offer")
+
+    async def test_cancel_with_offer_id_none_never_reaches_citizen(self) -> None:
+        chat = booking_chat(slots=PAST_ONLY)
+        city = PartnerCity(chat, peers=[Peer(agent_id=PARTNER, role="facility",
+                                             capabilities=("hospital.physiatry",))])
+        await desk(city, chat[0])
+        await desk(city, msg(PARTNER, "cancel offer_id=none reason=facility_cancelled", AGENT))
+        self.assertFalse(any("offer_id=none" in text for text in to_citizen(city)))
+
+    async def test_refused_doctor_not_offered_again_that_day(self) -> None:
+        chat = booking_chat(slots=DEFAULT_SLOTS[:5])
+        city = PartnerCity(chat)
+        await desk(city, chat[0])
+        await desk(city, msg(CIT, "confirm offer_id=of-S-1 consent_ref=cons-1", AGENT))
+        await desk(city, msg(HOSP, "cancel offer_id=of-S-1 reason=facility_cancelled", AGENT))
+        cancel = [t for t in to_citizen(city) if t.startswith("cancel offer_id=of-S-1")]
+        self.assertEqual(len(cancel), 1)
+        self.assertIn("altre date", cancel[0])
+        again = bc._offers_in(to_citizen(city)[-1])
+        self.assertTrue(again)
+        # S-1 and S-2 are both h1 on Monday 23: neither comes back.
+        self.assertFalse({o["slot_id"] for o in again} & {"S-1", "S-2"})
+
+    async def test_same_cancel_twice_told_once(self) -> None:
+        chat = booking_chat(slots=DEFAULT_SLOTS[:5])
+        city = PartnerCity(chat)
+        await desk(city, chat[0])
+        await desk(city, msg(CIT, "confirm offer_id=of-S-3 consent_ref=cons-1", AGENT))
+        for _ in range(2):
+            await desk(city, msg(HOSP, "cancel offer_id=of-S-3 reason=facility_cancelled", AGENT))
+        self.assertEqual(len([t for t in to_citizen(city) if t.startswith("cancel ")]), 1)
+
+    async def test_no_offer_after_confirm(self) -> None:
+        chat = booking_chat(slots=DEFAULT_SLOTS[:5])
+        city = PartnerCity(chat)
+        await desk(city, chat[0])
+        await desk(city, msg(CIT, "confirm offer_id=of-S-3 consent_ref=cons-1", AGENT))
+        before = len(to_citizen(city))
+        await desk(city, msg(LEDGER, "agenda agenda_now=" + NOW, AGENT))
+        self.assertEqual(len(to_citizen(city)), before)
+
+    async def test_english_doctor_missing_gets_relaxed_alternative(self) -> None:
+        italian_only = [line for line in DEFAULT_SLOTS if "-h2 " in line]
+        chat = plain_chat(f"need.request prescription_number={RX} lang=en", slots=italian_only)
+        partners = [Peer(agent_id=PARTNER, role="facility", capabilities=("hospital.physiatry",))]
+        city = PartnerCity(chat, peers=partners)
+        await desk(city, chat[0])
+        last = to_citizen(city)[-1]
+        self.assertTrue(bc._offers_in(last), to_citizen(city))
+        self.assertIn("Italian-speaking", last)
+
+    async def test_confirm_to_facility_explains_and_flags_access(self) -> None:
+        chat = booking_chat(slots=DEFAULT_SLOTS[:5],
+                            citizen_extra="vengo in carrozzina")
+        city = PartnerCity(chat)
+        await desk(city, chat[0])
+        await desk(city, msg(CIT, "confirm offer_id=of-S-3 consent_ref=cons-1", AGENT))
+        sent = city.sent_to(HOSP)[0]
+        self.assertTrue(sent.startswith("confirm "))
+        self.assertIn("vi inoltro la scelta del cittadino", sent)
+        self.assertIn("accessibilità", sent)
+        self.assertEqual(understood(msg(AGENT, sent, HOSP)).type, "confirm")
 
 
 if __name__ == "__main__":

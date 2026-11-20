@@ -503,12 +503,33 @@ def _pick(slots: list[dict[str, str]], days: set[str], limit: int = _MAX_OFFERS)
     return (first + rest)[:limit]
 
 
+def _offer_sentence(lang: str, days: set[str] | None = None, lead: str = "") -> str:
+    """The words around the offer lines: why these slots, how to choose, what to bring."""
+
+    english = lang == "en"
+    base = lead or (_OFFER_EN if english else _OFFER_IT)
+    if days and not lead:
+        names = {"mon": ("lunedì", "Monday"), "tue": ("martedì", "Tuesday"),
+                 "wed": ("mercoledì", "Wednesday"), "thu": ("giovedì", "Thursday"),
+                 "fri": ("venerdì", "Friday")}
+        listed = ", ".join(names[d][1 if english else 0] for d in sorted(days, key=list(names).index)
+                           if d in names)
+        base += (f" I put your preferred days first ({listed})." if english
+                 else f" Ho messo per primi i giorni che preferisce ({listed}).")
+    return base + (_OFFER_HELP_EN if english else _OFFER_HELP_IT)
+
+
 def _offer_block(
-    slots: list[dict[str, str]], number: str | None, priority: str | None, lang: str
+    slots: list[dict[str, str]],
+    number: str | None,
+    priority: str | None,
+    lang: str,
+    days: set[str] | None = None,
+    lead: str = "",
 ) -> str:
     """One message, one ``offer`` line per slot, kept under the citizen text limit."""
 
-    sentence = _OFFER_IT if lang == "it" else _OFFER_EN
+    sentence = _offer_sentence(lang, days, lead)
     lines: list[str] = []
     for slot in slots[:_MAX_OFFERS]:
         line = _offer_line(slot, number, priority)

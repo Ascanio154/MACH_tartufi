@@ -19,6 +19,14 @@ bc = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(bc)
 bc._PULL_PAUSE = 0
 
+
+def reset_memory() -> None:
+    """The brain keeps per-process memory in module globals: start every test clean."""
+
+    for name in ("_SENT", "_GATES", "_CROSS_ASKED", "_RECEIPTS", "_LAST_OFFERS", "_BOOK_ASKED",
+                 "_PENDING", "_CONFIRMED_BY", "_BOOKED", "_AGENT_NOTED", "_CANCELS_SENT"):
+        getattr(bc, name).clear()
+
 AGENT = "agent:bc"
 HOSP = "agent:hosp"
 HOSP2 = "agent:hosp2"
@@ -121,7 +129,7 @@ async def run_advance(city: FakeCity, *, replacing: bool = False) -> None:
 
 class OneOfferMessage(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
-        bc._SENT.clear()
+        reset_memory()
 
     def test_offers_in_parses_each_line(self) -> None:
         text = "\n".join(
@@ -204,7 +212,7 @@ def offer_messages(texts: list[str]) -> list[str]:
 
 class PrescriptionRenewal(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
-        bc._SENT.clear()
+        reset_memory()
 
     async def test_rules_sent_with_agenda(self) -> None:
         city = FakeCity([msg(CIT, f"need.request prescription_number={RX} lang=it", AGENT)])
@@ -280,7 +288,7 @@ class PrescriptionRenewal(unittest.IsolatedAsyncioTestCase):
 
 class FacilityDown(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
-        bc._SENT.clear()
+        reset_memory()
 
     async def confirm_first_hosp_offer(self, city: FakeCity) -> dict[str, str]:
         await run_advance(city)

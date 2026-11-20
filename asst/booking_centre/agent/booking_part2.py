@@ -131,6 +131,14 @@ _LAST_OFFERS: dict[str, list[dict[str, str]]] = {}
 _BOOK_ASKED: dict[str, tuple[str, int]] = {}
 # Citizen -> offer forwarded to the facility, waiting for the receipt.
 _PENDING: dict[str, str] = {}
+
+
+def _who(chat: list[Message], citizen: str) -> str:
+    """Key of one citizen's need: a citizen can come back with another need later."""
+
+    need = next((row.need_id for row in chat if row.need_id), "")
+    return f"{need}|{citizen}"
+
 # Need -> the agent (another ASST's booking centre) whose confirm we forwarded.
 _CONFIRMED_BY: dict[str, str] = {}
 # Citizens whose receipt we forwarded.
@@ -223,11 +231,23 @@ _PHRASES: dict[str, tuple[str, str]] = {
         "All right, I won't book anything without your agreement. The options stay open if "
         "you change your mind.",
     ),
+    "still_none": (
+        "Purtroppo non ci sono ancora posti adatti. Se può indicarmi altri giorni o un'altra "
+        "preferenza sul medico, riprovo subito.",
+        "Unfortunately there is still no suitable slot. If you can tell me other days or "
+        "another doctor preference, I will search again at once.",
+    ),
+    "refused": (
+        "La struttura non ha potuto tenere questo posto: le propongo subito altre date.",
+        "The facility could not keep this slot: I am sending you other dates right away.",
+    ),
     "receipt": (
         "Prenotazione confermata. Il giorno della visita si presenti alla struttura con questo "
-        "booking_id per registrare l'arrivo.",
-        "Booking confirmed. On the day of the visit go to the facility with this booking_id "
-        "to register your arrival.",
+        "booking_id, la ricetta e un documento per registrare l'arrivo. Se può, usi i mezzi "
+        "pubblici; per esigenze di accessibilità me lo scriva e avviso la struttura.",
+        "Booking confirmed. On the day of the visit go to the facility with this booking_id, "
+        "your referral and an ID document to register your arrival. If you can, use public "
+        "transport; for accessibility needs write to me and I will tell the facility.",
     ),
 }
 _ACT_WORDS = frozenset(
@@ -266,7 +286,7 @@ def _emergency(message: Message) -> bool:
 
 
 def _booked(chat: list[Message], agent: str, citizen: str) -> bool:
-    return citizen in _BOOKED or any(
+    return _who(chat, citizen) in _BOOKED or any(
         row.sender == agent and row.recipient in ("", citizen)
         and first_word(row.text) == "booking.receipt"
         for row in chat
@@ -276,7 +296,7 @@ def _booked(chat: list[Message], agent: str, citizen: str) -> bool:
 def _open_offers(chat: list[Message], agent: str, citizen: str) -> list[dict[str, str]]:
     """The offers the citizen can still pick: our latest offer message, minus cancelled ones."""
 
-    if not citizen or citizen in _PENDING:
+    if not citizen or _who(chat, citizen) in _PENDING:
         return []
     latest: list[dict[str, str]] = []
     cancelled: set[str] = set()
@@ -413,10 +433,12 @@ async def _no_silence(city: City, message: Message, chat: list[Message]) -> None
     number = _number(fresh)
     if _booked(fresh, agent, citizen):
         name = "booked"
-    elif citizen in _PENDING:
+    elif _who(fresh, citizen) in _PENDING:
         name = "pending"
     elif _open_offers(fresh, agent, citizen):
         name = "offers_open"
+    elif "partner-closed" in _sent(key).offers:
+        name = "still_none"
     elif _partners_asked(fresh, agent, key) and not _partner_offered(key, number):
         name = "partners_wait"
     elif not number:
