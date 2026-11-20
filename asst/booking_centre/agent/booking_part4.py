@@ -7,6 +7,8 @@ async def _partner_cancel(
 ) -> None:
     fields = fields_of(message.text)
     offer_id = fields.get("offer_id", "")
+    if offer_id.lower() in ("none", "null", "nil", "-", "0"):
+        offer_id = ""  # journey 116: never pass "cancel offer_id=none" on to the citizen
     citizen = _citizen(chat)
     key = message.need_id or message.msg_id
     partner = _CONFIRMED_BY.get(key, "")
@@ -15,9 +17,12 @@ async def _partner_cancel(
         reason = fields.get("reason", "facility_cancelled")
         await _say(city, partner, f"cancel offer_id={offer_id} reason={reason}")
         return
-    if citizen and offer_id and _PENDING.get(citizen) == offer_id:
-        _PENDING.pop(citizen, None)
-    if not offer_id and fields.get("request_id") == f"x-{key}":
+    if citizen and offer_id and _PENDING.get(_who(chat, citizen)) == offer_id:
+        _PENDING.pop(_who(chat, citizen), None)
+    if not offer_id and (
+        fields.get("request_id") == f"x-{key}"
+        or message.sender in _partners_asked(chat, city.agent_id, key)
+    ):
         # A partner has no slot for our search. When every partner asked said so, tell the
         # citizen instead of leaving them waiting.
         entry = _sent(key)
@@ -36,14 +41,23 @@ async def _partner_cancel(
         return
     # P1: the Ledger refused the commit because the prescription expired. Offering the same
     # number again books an expired prescription, so send the citizen to the GP instead.
+    if not offer_id:
+        return  # a cancel naming no offer of ours: nothing to withdraw
     expired = "EXPIR" in fields.get("reason", "").upper()
     reason = "prescription_expired" if expired else "facility_cancelled"
+    refused = _find_offer(chat, city.agent_id, offer_id)
+    if refused.get("doctor_id"):
+        when = refused.get("agenda_date") or refused.get("at", "")
+        _sent(key).offers.add(f"bad-doc:{refused['doctor_id']}|{when[:10]}")
+    mark = (citizen or "", offer_id)
     if (
-        offer_id
-        and citizen
+        citizen
+        and mark not in _CANCELS_SENT
         and not _we(chat, city.agent_id, f"offer_id={offer_id}", to=citizen, word="cancel")
     ):
-        await _say(city, citizen, f"cancel offer_id={offer_id} reason={reason}")
+        _CANCELS_SENT.add(mark)
+        sentence = "" if expired else _phrase("refused", _lang(chat))
+        await _say(city, citizen, f"cancel offer_id={offer_id} reason={reason} {sentence}".rstrip())
     if expired:
         number = _our_offer(chat, city.agent_id, offer_id).get("prescription_number") or _number(chat)
         if citizen and number:
@@ -314,3 +328,14 @@ async def _on_reported(city: City, message: Message, chat: list[Message]) -> Non
     if _we(chat, city.agent_id, token, to=citizen, word="report"):
         return
     await _say(city, citizen, f"report booking_id={booking_id} outcome_code=VISIT")
+
+
+# (citizen, offer) cancels already passed on: journey 104 got the same cancel twice.
+_CANCELS_SENT: set[tuple[str, str]] = set()
+
+
+def _needs_access(chat: list[Message]) -> bool:
+    """The citizen mentioned a wheelchair, a disability or similar accessibility needs."""
+
+    return any(row.sender.startswith("citizen:") and _ACCESS_WORDS.search(row.text)
+               for row in chat)

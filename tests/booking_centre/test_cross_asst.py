@@ -20,6 +20,7 @@ from tests.booking_centre.test_quick_wins import (
     bc,
     booking_chat,
     msg,
+    reset_memory,
     slot,
 )
 
@@ -80,10 +81,7 @@ class _Fresh(unittest.IsolatedAsyncioTestCase):
     """The brain remembers sent offers per need in module globals; every test starts clean."""
 
     def setUp(self) -> None:
-        bc._SENT.clear()
-        bc._GATES.clear()
-        bc._CROSS_ASKED.clear()
-        bc._RECEIPTS.clear()
+        reset_memory()
 
 
 class AskPartners(_Fresh):
@@ -145,10 +143,7 @@ class AskPartners(_Fresh):
         city = PartnerCity(booking_chat(slots=PAST_ONLY), peers=peers())
         await advance(city)
         await advance(city)
-        notices = [
-            text for text in city.sent_to(CIT)
-            if not text.startswith("offer") and "ASST" in text
-        ]
+        notices = [text for text in city.sent_to(CIT) if text == bc._PARTNER_ASK_IT]
         self.assertEqual(len(notices), 1)
 
 
@@ -327,10 +322,11 @@ class NextSteps(_Fresh):
     async def test_all_partners_no_availability_closes(self) -> None:
         city = await asked_city()
         asked = [to for to, _ in requests(city)]
-        for peer in asked[:-1]:
+        # Partners that stay silent in the ask turn: the citizen hears the outcome at once
+        # (journey 113), and later "no" answers never repeat it.
+        self.assertEqual(len(closing(city)), 1)
+        for peer in asked:
             await partner_says(city, peer, f"cancel request_id=x-{NEED} reason=no_availability")
-        self.assertEqual(closing(city), [])
-        await partner_says(city, asked[-1], f"cancel request_id=x-{NEED} reason=no_availability")
         self.assertEqual(len(closing(city)), 1)
 
     async def test_citizen_resend_after_silent_search_closes(self) -> None:

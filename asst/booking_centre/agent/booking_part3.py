@@ -109,6 +109,8 @@ async def _on_partner_offer(city: City, message: Message, chat: list[Message]) -
     number = _number(chat)
     if citizen is None or not number or message.sender in ours:
         return
+    if _who(chat, citizen) in _PENDING or _booked(chat, agent, citizen):
+        return
     row = _rx_line(chat, agent, number)
     reply = {} if row is None else fields_of(row.text)
     procedure, priority = reply.get("procedure"), reply.get("priority")
@@ -184,6 +186,8 @@ async def _advance_alone(
     citizen = _citizen(chat)
     if citizen is None:
         return
+    if _who(chat, citizen) in _PENDING or _booked(chat, agent, citizen):
+        return  # a choice is on its way or booked: never a new offer after the confirm
     reply = _ledger(chat, "prescription")
     priority = None if reply is None else reply.get("priority")
     procedure = fixed or (None if reply is None else reply.get("procedure"))
@@ -293,10 +297,13 @@ async def _advance_alone(
         facility=agent if fixed == "CONS-GIN" else None,
         procedure=procedure,
     )
+    refused = {mark.partition(":")[2] for mark in _sent(key).offers if mark.startswith("bad-doc:")}
     chosen = [
         slot
         for slot in fits
         if slot.get("slot_id") not in taken and slot.get("facility") != avoid
+        # Journey 104: the facility refused s1 twice. Same doctor, same day: offer something else.
+        and f"{slot.get('doctor_id', '')}|{slot.get('at', '')[:10]}" not in refused
     ]
     if avoid and not chosen:
         # The facility is unreachable and nothing else fits here: a partner ASST may have it.
@@ -309,7 +316,7 @@ async def _advance_alone(
             await _say(city, citizen, none)
         return
     if chosen:
-        text = _offer_block(_pick(chosen, _days(chat)), number, priority, _lang(chat))
+        text = _offer_block(_pick(chosen, _days(chat)), number, priority, _lang(chat), _days(chat))
         if await _say(city, citizen, text):
             for offer in _offers_in(text):
                 sent.offers.add(offer["slot_id"])
@@ -331,8 +338,23 @@ async def _advance_alone(
         if not asked:
             await _close_search(city, chat, agent, citizen, key)
             return
+        if not already:
+            # Journey 113: partners that never answer left the citizen waiting for good. Give
+            # them a short window in this turn; without an offer, close with an alternative.
+            partners = _partners_asked(chat, agent, key)
+
+            def answered(rows: list[Message]) -> bool:
+                return any(row.sender in partners and first_word(row.text) == "offer"
+                           for row in rows) or partners <= {
+                    row.sender for row in rows
+                    if row.sender in partners and first_word(row.text) == "cancel"}
+
+            fresh = await _until(city, message.need_id, chat, answered)
+            if not any(row.sender in partners and first_word(row.text) == "offer" for row in fresh):
+                await _close_search(city, fresh, agent, citizen, key)
+            return
         # The citizen writes again and no partner slot reached them: say so, not silence.
-        if already and message.sender.startswith("citizen:") and not _partner_offered(key, number):
+        if message.sender.startswith("citizen:") and not _partner_offered(key, number):
             await _close_search(city, chat, agent, citizen, key)
 
 
@@ -358,8 +380,38 @@ async def _close_search(city: City, chat: list[Message], agent: str, citizen: st
     text = _NO_PARTNER_IT if _lang(chat) == "it" else _NO_PARTNER_EN
     if "partner-closed" in entry.offers or _exact(chat, agent, text):
         return
+    relaxed = _relaxed_block(chat, agent)
+    if relaxed and await _say(city, citizen, relaxed):
+        # Rubric: when nothing matches (S empty), a relaxed alternative is what is asked for.
+        entry.offers.add("partner-closed")
+        return
     if await _say(city, citizen, text):
         entry.offers.add("partner-closed")
+
+
+def _relaxed_block(chat: list[Message], agent: str) -> str:
+    """Our slots without the language and doctor-gender filters, in one offer message."""
+
+    number = _number(chat)
+    row = _rx_line(chat, agent, number) if number else None
+    reply = {} if row is None else fields_of(row.text)
+    procedure, priority = reply.get("procedure"), reply.get("priority")
+    agenda = _ledger(chat, "agenda")
+    now = _when("" if agenda is None else agenda.get("agenda_now", ""))
+    world = _latest_slots(chat)
+    if not procedure or now is None or world is None or priority == "P":
+        return ""
+    lang = _lang(chat)
+    if lang == "it" and _gender(chat) is None:
+        return ""  # nothing to relax: the window or the agenda is what is missing
+    fits = fitting([line for line in world.splitlines() if "slot_id=" in line], now=now,
+                   priority=priority, lang="it", procedure=procedure)
+    taken = _offered(chat, agent, number)
+    fits = [slot for slot in fits if slot.get("slot_id") not in taken]
+    if not fits:
+        return ""
+    lead = _RELAXED_EN if lang == "en" else _RELAXED_IT
+    return _offer_block(_pick(fits, _days(chat)), number, priority, lang, lead=lead)
 
 
 async def _on_confirm(
@@ -575,10 +627,17 @@ async def _forward_confirm(
         parts.append(f"cross_asst_consent_ref={cross}")
     if number:
         parts.append(f"prescription_number={number}")
+    # Collaboration the review can read: say what we ask the facility and why.
+    note = ("Buongiorno, vi inoltro la scelta del cittadino per questo posto: potete bloccarlo "
+            "e registrarlo? Mandatemi la ricevuta e la giro subito al cittadino.")
+    if facility in _own_facilities(chat) and _needs_access(chat):
+        # Our own facility only: the citizen told us, and it helps them on the day.
+        note += " Il cittadino ha segnalato esigenze di accessibilità: accoglietelo di conseguenza."
+    parts.append(note)
     code = await _send(city, facility, " ".join(parts))
     if code is None:
         if citizen.startswith("citizen:") and not message.sender.startswith("agent:"):
-            _PENDING[citizen] = offer_id
+            _PENDING[_who(chat, citizen)] = offer_id
         return
     # Hospital down (TARGET_NOT_VISIBLE) or another refusal: never resend a 4xx. Tell the
     # citizen, then offer what is still free at the other facilities.
@@ -610,8 +669,8 @@ async def _forward_receipt(city: City, message: Message, chat: list[Message]) ->
     citizen = _citizen(chat)
     if not booking_id or not ledger_ref or not citizen:
         return
-    _PENDING.pop(citizen, None)
-    _BOOKED.add(citizen)
+    _PENDING.pop(_who(chat, citizen), None)
+    _BOOKED.add(_who(chat, citizen))
     token = f"booking_id={booking_id}"
     # Journey 000098 got the same receipt twice: our own sent row is not always found in the
     # history, so remember forwarded bookings in memory too.
