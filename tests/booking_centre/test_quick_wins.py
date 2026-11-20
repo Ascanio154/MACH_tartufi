@@ -187,5 +187,92 @@ class OneOfferMessage(unittest.IsolatedAsyncioTestCase):
         self.assertIn(f"slot_id={third['slot_id']}", forwarded[0].split())
 
 
+NEW = "prescription_number-NEW1"
+
+
+def renewals(texts: list[str]) -> list[str]:
+    return [t for t in texts if "data.request" in t.split() and "purpose=prescription_renewal" in t.split()]
+
+
+def offer_messages(texts: list[str]) -> list[str]:
+    return [t for t in texts if offer_lines(t)]
+
+
+class PrescriptionRenewal(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        bc._SENT.clear()
+
+    async def test_rules_sent_with_agenda(self) -> None:
+        city = FakeCity([msg(CIT, f"need.request prescription_number={RX} lang=it", AGENT)])
+        await run_advance(city)
+        to_ledger = city.sent_to(LEDGER)
+        self.assertIn("rules", to_ledger)
+        self.assertIn("agenda", to_ledger)
+        self.assertIn(f"prescription prescription_number={RX}", to_ledger)
+
+    def test_rx_line_tied_to_number(self) -> None:
+        chat = booking_chat() + [msg(CIT, f"need.request prescription_number={NEW} lang=it", AGENT)]
+        self.assertIsNone(bc._rx_line(chat, AGENT, NEW))
+        self.assertIn(f"prescription_number={RX}", bc._rx_line(chat, AGENT, RX).text.split())
+
+    async def test_expired_state_asks_renewal_once_no_offers(self) -> None:
+        city = FakeCity(booking_chat(rx_reply=f"prescription prescription_number={RX} procedure=VIS-FIS priority=D state=expired"))
+        await run_advance(city)
+        await run_advance(city)
+        self.assertEqual(len(renewals(city.sent_to(CIT))), 1)
+        self.assertEqual(offer_messages(city.sent_to(CIT)), [])
+
+    async def test_expired_token_in_refusal(self) -> None:
+        city = FakeCity(booking_chat(rx_reply=f"refused prescription prescription_number={RX} reason=PRESCRIPTION_EXPIRED"))
+        await run_advance(city)
+        self.assertEqual(len(renewals(city.sent_to(CIT))), 1)
+        self.assertEqual(offer_messages(city.sent_to(CIT)), [])
+
+    async def test_p1_rules_and_issue_date(self) -> None:
+        chat = booking_chat(rx_reply=f"prescription prescription_number={RX} procedure=VIS-FIS priority=D state=issued issued_at=2026-11-18T09:00:00+01:00")
+        chat.insert(-1, msg(LEDGER, "rules rule_id=P1 version=1 effective_agenda=2026-11-18T08:00:00+01:00", AGENT))
+        city = FakeCity(chat)
+        await run_advance(city)
+        self.assertEqual(len(renewals(city.sent_to(CIT))), 1)
+        self.assertEqual(offer_messages(city.sent_to(CIT)), [])
+
+    async def test_p1_issue_date_skips_weekend(self) -> None:
+        # Issued Friday 09:00, now Monday 08:00: under one agenda day, the agenda has no weekends.
+        chat = booking_chat(rx_reply=f"prescription prescription_number={RX} procedure=VIS-FIS priority=D state=issued issued_at=2026-11-20T09:00:00+01:00")
+        chat.insert(-1, msg(LEDGER, "rules rule_id=P1 version=1 effective_agenda=2026-11-18T08:00:00+01:00", AGENT))
+        city = FakeCity(chat)
+        await run_advance(city)
+        self.assertEqual(renewals(city.sent_to(CIT)), [])
+        self.assertEqual(len(offer_messages(city.sent_to(CIT))), 1)
+
+    async def test_renewed_number_gets_fresh_offer(self) -> None:
+        city = FakeCity(booking_chat())
+        await run_advance(city)  # six offers for the old number
+        city.chat += [
+            msg(CIT, f"need.request prescription_number={NEW} lang=it", AGENT),
+            msg(AGENT, f"prescription prescription_number={NEW}", LEDGER),
+            msg(LEDGER, f"prescription prescription_number={NEW} procedure=VIS-FIS priority=D state=issued", AGENT),
+        ]
+        city.inbound = city.chat[-1]
+        await run_advance(city)
+        fresh = offer_messages(city.sent_to(CIT))[-1]
+        self.assertEqual(len(offer_lines(fresh)), 6)
+        self.assertTrue(all(f"prescription_number={NEW}" in line.split() for line in offer_lines(fresh)))
+
+    async def test_partner_cancel_expired_asks_renewal(self) -> None:
+        city = FakeCity(booking_chat())
+        await run_advance(city)
+        cancel = msg(HOSP, "cancel offer_id=of-S-1 reason=PRESCRIPTION_EXPIRED", AGENT)
+        city.chat.append(cancel)
+        city.inbound = cancel
+        await bc._desk(city, cancel, list(city.chat), hold_self=False, fixed=None)
+        to_citizen = city.sent_to(CIT)
+        cancels = [t for t in to_citizen if t.startswith("cancel ")]
+        self.assertEqual(len(cancels), 1)
+        self.assertIn("reason=prescription_expired", cancels[0].split())
+        self.assertEqual(len(renewals(to_citizen)), 1)
+        self.assertEqual(len(offer_messages(to_citizen)), 1)  # only the original offer
+
+
 if __name__ == "__main__":
     unittest.main()
