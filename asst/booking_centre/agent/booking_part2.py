@@ -30,7 +30,15 @@ async def _desk(
     # without reply as passive (-1). _say flags every message that reaches the citizen.
     flag = _REPLIED.set([False])
     try:
-        await _desk_turn(city, message, chat, hold_self=hold_self, fixed=fixed)
+        turn = asyncio.ensure_future(
+            _desk_turn(city, message, chat, hold_self=hold_self, fixed=fixed))
+        if "confirm" not in words(message.text):
+            # Ledger reads can take 15-20 s (live log, level 4): a short "on it" first, so
+            # the citizen is never left waiting in silence; the offer follows in the same turn.
+            done, _pending = await asyncio.wait({turn}, timeout=_ACK_AFTER)
+            if not done and not _REPLIED.get()[0]:
+                await _no_silence(city, message, chat)
+        await turn
         if not _REPLIED.get()[0]:
             await _no_silence(city, message, chat)
     finally:
@@ -643,6 +651,7 @@ async def _answer_partner(city: City, message: Message, chat: list[Message]) -> 
         if len("\n".join([*rows, line])) > _MAX_TEXT:
             break
         rows.append(line)
-    await _say(city, partner, "\n".join(rows))
+    if await _say(city, partner, "\n".join(rows)):
+        _OFFERED_TO.update((partner, slot["slot_id"]) for slot in slots)
 
 

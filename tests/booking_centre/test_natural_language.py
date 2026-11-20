@@ -6,6 +6,7 @@ Run from the repo root with the city-cli Python (it ships city_sdk):
 
 from __future__ import annotations
 
+import asyncio
 import unittest
 
 from city_sdk.city import LEDGER, Message, Peer, understood
@@ -494,6 +495,24 @@ class LogReport2343(_Fresh):
         self.assertIn("martedì 24/11 alle 09:00", receipt)
         self.assertIn("08:00-13:00", receipt)
         self.assertEqual(understood(msg(AGENT, receipt, CIT)).type, "booking.receipt")
+
+    async def test_slow_turn_gets_quick_ack_then_offer(self) -> None:
+        chat = booking_chat(slots=DEFAULT_SLOTS[:5])
+        city = PartnerCity(chat)
+        turn = bc._desk_turn
+
+        async def slow_turn(*args, **kwargs):  # the slow Ledger reads of the live log
+            await asyncio.sleep(0.05)
+            await turn(*args, **kwargs)
+
+        old, bc._ACK_AFTER, bc._desk_turn = bc._ACK_AFTER, 0.01, slow_turn
+        try:
+            await desk(city, chat[0])
+        finally:
+            bc._ACK_AFTER, bc._desk_turn = old, turn
+        texts = to_citizen(city)
+        self.assertIn("me ne occupo subito", texts[0])
+        self.assertTrue(any(bc._offers_in(t) for t in texts[1:]), texts)
 
 
 if __name__ == "__main__":

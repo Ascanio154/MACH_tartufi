@@ -510,6 +510,12 @@ async def _on_confirm(
     if message.sender.startswith("agent:") and not hold_self and facility != agent:
         # Another agent confirms a slot we offered it: the facility books, not the desk (our
         # grant cannot hold). Forward it and send the receipt back to that agent.
+        if not await _agent_confirm_ok(city, chat, message.sender, slot):
+            # Impostor guard: a slot we never offered this agent, from an unknown agent.
+            _LOG.info("care.confirm.ignored sender=%s slot=%s", message.sender, slot)
+            await _say(city, message.sender, f"cancel offer_id={offer_id or 'of-' + slot} "
+                       "reason=unknown_offer")
+            return
         _CONFIRMED_BY[message.need_id or message.msg_id] = message.sender
         if facility and citizen:
             await _forward_confirm(city, message, chat, offer_id=offer_id or f"of-{slot}",
@@ -553,6 +559,23 @@ async def _on_confirm(
         number=number,
         cross=cross,
     )
+
+
+async def _agent_confirm_ok(city: City, chat: list[Message], sender: str, slot: str) -> bool:
+    """An agent's confirm: ours, a slot we offered it, or a booking centre on the Index."""
+
+    if sender in _TEAM_AGENTS or (sender, slot) in _OFFERED_TO:
+        return True
+    if _we(chat, city.agent_id, f"slot_id={slot}", to=sender, word="offer"):
+        return True
+    try:
+        found = await city.find("booking_centre")
+    except CapError:
+        return True  # the Index is down: do not punish a real partner for it
+    return any(peer.agent_id == sender for peer in found)
+
+
+_OFFERED_TO: set[tuple[str, str]] = set()  # (partner booking centre, slot) we offered
 
 
 def _cross_consent_ref(chat: list[Message], citizen: str) -> str:

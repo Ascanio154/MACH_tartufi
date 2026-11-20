@@ -456,6 +456,14 @@ class Level4Live(_Fresh):
         await partner_says(city, PX1, lie)
         self.assertEqual(offer_messages(city), [])
 
+    async def test_confirm_from_unknown_agent_not_forwarded(self) -> None:
+        city = PartnerCity(booking_chat(), peers=peers())
+        await advance(city)
+        await partner_says(city, "agent:impostor",
+                           f"confirm offer_id=of-S-3 slot_id=S-3 citizen={CIT} consent_ref=c-1")
+        self.assertEqual(confirms_to(city, HOSP), [])
+        self.assertTrue(any("reason=unknown_offer" in t for t in city.sent_to("agent:impostor")))
+
 
 if __name__ == "__main__":
     unittest.main()

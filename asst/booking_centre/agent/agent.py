@@ -32,6 +32,7 @@ from city_sdk.city import (
 
 ROLES = ("booking_centre", "gp", "hospital", "specialist_care", "family_counseling")
 _MAX_PAGE = 8
+_ACK_AFTER = 4.0  # seconds before a citizen hears "I am on it" while we read the Ledger
 # Four agenda hours is about half a minute of real time at 480x, so a slot is still
 # ahead when the citizen decides. One hour was already past by then.
 _LEAD = timedelta(hours=4)
