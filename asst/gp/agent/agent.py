@@ -52,6 +52,28 @@ _RED_FLAGS = (
     "dolore al petto",
     "chest pain",
 )
+# Body part near a warning word, either order, within a short window. A missed escalation
+# is -2; an extra one costs at most that case's prescription, so these lean wide.
+_CHEST = r"\b(petto|torace|sterno|chest)\b"
+_CHEST_BAD = (
+    r"\b(dolor|male?\b|peso\b|pesante|oppress|stringe|stretta|schiacci|brucia|fitt[ae]\b|"
+    r"pain|hurt|ach(e|es|ing)\b|tight|pressure|crush|heavy)"
+)
+_LEGS = r"\b(gamb[ae]|legs?)\b"
+_LEGS_BAD = (
+    r"\b(forza|debol|non (le )?sento|non riesco a muover|non si muov|cedono|paralizz|"
+    r"intorpidit|addormentat|insensibil|"
+    r"strength|weak|numb|can'?t (feel|move)|cannot (feel|move)|giving way|give way|paraly)"
+)
+_RED_FLAG_RE = tuple(
+    re.compile(rf"{a}.{{0,40}}{b}|{b}.{{0,40}}{a}", re.DOTALL)
+    for a, b in ((_CHEST, _CHEST_BAD), (_LEGS, _LEGS_BAD))
+) + (re.compile(r"\binfarto\b|heart attack|\bictus\b|\bstroke\b"),)
+_ASK_SYMPTOM = (
+    "Mi dispiace per il disturbo, voglio aiutarla. Mi descrive meglio cosa sente, "
+    "dove e da quanto tempo? / I'm sorry you're unwell. Could you tell me what you feel, "
+    "where, and since when?"
+)
 _DEADLINE_DAYS = {"B": 2, "D": 5}
 _RX = re.compile(r"^prescription_number-[A-Z0-9-]{4,40}$")
 _LOG = logging.getLogger("care")
@@ -84,10 +106,12 @@ async def main(need: Need, city: City) -> None:
     if message is None:
         return
     text = message.text or need.summary
-    if clinical(text):
+    role = role_of()
+    # A GP still escalates a red flag that also asks for a dose: a missed escalation is -2.
+    if clinical(text) and not (role == "gp" and _emergency(message)):
         raise OutOfScope()
     case = await city.history(need_id=message.need_id)
-    await handle(role_of(), city, message, case)
+    await handle(role, city, message, case)
 
 
 def _asks_address(message: Message) -> bool:
@@ -402,7 +426,9 @@ def _emergency(message: Message) -> bool:
     if understood(message).body.get("is_emergency") is True:
         return True
     lowered = message.text.lower()
-    return any(flag in lowered for flag in _RED_FLAGS)
+    if any(flag in lowered for flag in _RED_FLAGS):
+        return True
+    return any(pattern.search(lowered) for pattern in _RED_FLAG_RE)
 
 
 def _symptom(message: Message) -> str | None:
@@ -437,6 +463,13 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
         return
     code = _symptom(message)
     if code is None:
+        # Silence ends the journey as no_reply and reads as passive. Ask once per case.
+        # Never after an escalation or a prescription: nothing else goes out on that need.
+        done = _our_rx(chat, agent) or any(
+            row.sender == agent and "escalate.emergency" in row.text for row in chat
+        )
+        if not done and not _exact(chat, agent, _ASK_SYMPTOM):
+            await _say(city, message.sender, _ASK_SYMPTOM)
         return
     procedure, priority = _PROTOCOLS[code]
     number = _rx(message.need_id, message.msg_id)
