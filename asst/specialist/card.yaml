@@ -1,0 +1,15 @@
+agent_id: agent:qy4ezbsz6yt4
+team: team:tartufi-pazzi
+name: specialist
+version: 1.0.0
+cap_versions:
+  - "1.0"
+profiles:
+  - mhm/1.0
+role: # TODO: assign a role to the agent
+capabilities:
+  - # TODO: assign capabilities to the agent
+  - # TODO: assign capabilities to the agent
+no_clinical_advice: true
+endpoints:
+  mailbox: agent:qy4ezbsz6yt4
