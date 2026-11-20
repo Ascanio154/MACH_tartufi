@@ -271,9 +271,71 @@ def _exact(chat: list[Message], agent: str, text: str) -> bool:
 
 
 async def _say(city: City, to: str, text: str) -> bool:
+    explanations = {
+        "offer": (
+            "Ti aiuto a trovare un appuntamento. Per il consultorio "
+            "non serve ricetta: scegli tra queste disponibilità.",
+            "I can help you find an appointment. No prescription is "
+            "needed for family counseling: choose one of these options.",
+        ),
+        "booking.receipt": (
+            "La prenotazione è confermata. Conserva questi riferimenti "
+            "per registrare il tuo arrivo.",
+            "Your appointment is booked. Keep these references "
+            "for your arrival.",
+        ),
+        "checkin": (
+            "Il tuo arrivo è stato registrato. Grazie.",
+            "Your arrival has been registered. Thank you.",
+        ),
+        "cancel": (
+            "C'è un problema con questo appuntamento. "
+            "Verifico le altre disponibilità.",
+            "There is a problem with this appointment. "
+            "I will check the other available options.",
+        ),
+        "escalate.emergency": (
+            "La situazione richiede assistenza urgente. Chiama il 112.",
+            "This needs urgent assistance. Call 112 now.",
+        ),
+    }
+
+    head = first_word(text)
+    if to.startswith("citizen:") and head in explanations:
+        inbound = city.inbound
+        rows = [inbound] if inbound is not None else []
+
+        if (
+            head != "escalate.emergency"
+            and inbound is not None
+            and inbound.need_id
+        ):
+            try:
+                rows = await city.history(need_id=inbound.need_id)
+            except CapError:
+                pass
+
+        english = _lang(rows) == "en"
+        explanation = explanations[head][1 if english else 0]
+
+        if head == "offer" and fields_of(text).get("waiting_list") == "true":
+            explanation = (
+                "This is a waiting-list proposal; no appointment is booked yet."
+                if english else
+                "Questa proposta riguarda la lista d'attesa; "
+                "l'appuntamento non è ancora fissato."
+            )
+
+        if len(text) + len(explanation) + 1 <= 2000:
+            text = text + "\n" + explanation
+
     try:
         await city.say(to, text)
-    except CapError:
+    except CapError as err:
+        _LOG.info(
+            "care.say.failed",
+            extra={"code": getattr(err, "code", "UNKNOWN")},
+        )
         return False
     return True
 
@@ -1128,14 +1190,23 @@ async def _on_refused(
     target, _, _ = _booking_of(chat, agent, slot)
     offer_id = ""
     for row in chat:
-        if f"slot_id={slot}" in row.text.split():
+        if row.sender == agent:
+            for offer in _offer_rows(row.text):
+                if offer.get("slot_id") == slot:
+                    offer_id = offer.get("offer_id", offer_id)
+        elif f"slot_id={slot}" in row.text.split():
             offer_id = fields_of(row.text).get("offer_id", offer_id)
     if (
         target
         and offer_id
         and not _we(chat, agent, f"offer_id={offer_id}", to=target, word="cancel")
     ):
-        await _say(city, target, f"cancel offer_id={offer_id} reason=facility_cancelled")
+        reason = fields_of(message.text).get("code", "booking_refused")
+        await _say(
+            city,
+            target,
+            f"cancel offer_id={offer_id} reason={reason}",
+        )
     if hold_self:
         await _advance(city, message, chat, fixed="CONS-GIN", replacing=True)
 
