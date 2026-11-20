@@ -961,6 +961,10 @@ async def _facility(
 # offer message of our own free slots; its later ``confirm`` goes through _on_confirm (hold,
 # commit with its consent_ref, receipt back to it). Same block in hospital and specialist.
 _PARTNER_MAX = 6
+# Scarcity (level 4): page 1 of the world may hold only full or late slots. Read a few more
+# pages, but stay inside the fast-reply window.
+_PARTNER_PAGES = 3
+_PARTNER_BUDGET = 6.0  # seconds spent waiting for extra pages
 # Our ASST's rare language (``*`` in _DOCTORS), from the Mondo ASST page: asst-greco-h3.
 _RARE_LANG = "si"
 
@@ -1004,6 +1008,30 @@ def _partner_slots(
     return (first + rest)[:_PARTNER_MAX]
 
 
+def _partner_pages(chat: list[Message], procedure: str) -> dict[int, str]:
+    """The Ledger's ``slots`` pages for ``procedure`` in this case, by page number."""
+
+    found: dict[int, str] = {}
+    for row in chat:
+        if row.sender != LEDGER or first_word(row.text) != "slots":
+            continue
+        head = fields_of(row.text.splitlines()[0])
+        if head.get("procedure", procedure) != procedure:
+            continue
+        page, _ = _page(row.text)
+        found[page] = row.text
+    return found
+
+
+def _partner_lines(chat: list[Message], procedure: str) -> list[str]:
+    return [
+        line
+        for _, text in sorted(_partner_pages(chat, procedure).items())
+        for line in text.splitlines()
+        if "slot_id=" in line
+    ]
+
+
 async def _answer_partner(city: City, message: Message, chat: list[Message]) -> None:
     """One offer message (or a cancel) for a partner booking centre's ``need.request``."""
 
@@ -1040,12 +1068,35 @@ async def _answer_partner(city: City, message: Message, chat: list[Message]) -> 
     if world is None or now is None:
         return
     slots = _partner_slots(
-        [line for line in world.splitlines() if "slot_id=" in line],
+        _partner_lines(chat, procedure) or [line for line in world.splitlines() if "slot_id=" in line],
         now=now,
         priority=priority,
         facility=agent,
         procedure=procedure,
     )
+    _, pages = _page(_partner_pages(chat, procedure).get(1, world))
+    loop = asyncio.get_running_loop()
+    stop = loop.time() + _PARTNER_BUDGET
+    page = 1
+    while len(slots) < _PARTNER_MAX and page < min(pages, _PARTNER_PAGES) and loop.time() < stop:
+        page += 1
+        if not _asked(chat, agent, procedure, page):
+            await _say(city, LEDGER, f"world procedure={procedure} page={page}")
+        chat = await _until(
+            city,
+            message.need_id,
+            chat,
+            lambda rows, wanted=page: wanted in _partner_pages(rows, procedure),
+        )
+        if page not in _partner_pages(chat, procedure):
+            break
+        slots = _partner_slots(
+            _partner_lines(chat, procedure),
+            now=now,
+            priority=priority,
+            facility=agent,
+            procedure=procedure,
+        )
     if not slots:
         await _say(city, partner, f"cancel {token} reason=no_availability")
         return
