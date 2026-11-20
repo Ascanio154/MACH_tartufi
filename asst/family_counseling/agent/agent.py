@@ -83,11 +83,30 @@ async def main(need: Need, city: City) -> None:
     message = city.inbound
     if message is None:
         return
+
     text = message.text or need.summary
+    role = role_of()
+
+    if (
+        role == "family_counseling"
+        and message.sender.startswith("citizen:")
+        and (
+            getattr(need, "is_emergency", False) is True
+            or _emergency(message)
+        )
+    ):
+        await _say(
+            city,
+            message.sender,
+            "escalate.emergency reason=red_flag",
+        )
+        return
+
     if clinical(text):
         raise OutOfScope()
+
     case = await city.history(need_id=message.need_id)
-    await handle(role_of(), city, message, case)
+    await handle(role, city, message, case)
 
 
 def _asks_address(message: Message) -> bool:
@@ -206,6 +225,13 @@ def fields_of(text: str) -> dict[str, str]:
         if key not in found and value:
             found[key] = value
     return found
+
+def _offer_rows(text: str) -> list[dict[str, str]]:
+    if first_word(text) != "offer":
+        return []
+
+    blocks = re.split(r"(?<!\S)offer_id=", text)[1:]
+    return [fields_of("offer_id=" + block) for block in blocks]
 
 
 def _when(value: str) -> datetime | None:
@@ -525,31 +551,32 @@ def _asked(chat: list[Message], agent: str, procedure: str, page: int) -> bool:
 def _offered(chat: list[Message], agent: str) -> set[str]:
     found: set[str] = set()
     for row in chat:
-        if row.sender != agent or "offer" not in words(row.text):
+        if row.sender != agent:
             continue
-        slot = fields_of(row.text).get("slot_id")
-        if slot:
-            found.add(slot)
+        for offer in _offer_rows(row.text):
+            slot = offer.get("slot_id")
+            if slot:
+                found.add(slot)
     return found
 
 
 def _withdrawn(chat: list[Message], agent: str) -> set[str]:
-    """Slots we cancelled. The citizen drops the rest, so those are offered again."""
-
     by_offer: dict[str, str] = {}
     for row in chat:
-        if row.sender != agent or "offer" not in words(row.text):
+        if row.sender != agent:
             continue
-        fields = fields_of(row.text)
-        offer_id = fields.get("offer_id")
-        slot = fields.get("slot_id")
-        if offer_id and slot:
-            by_offer[offer_id] = slot
+        for offer in _offer_rows(row.text):
+            offer_id = offer.get("offer_id")
+            slot = offer.get("slot_id")
+            if offer_id and slot:
+                by_offer[offer_id] = slot
+
     dropped: set[str] = set()
     for row in chat:
-        if "cancel" not in words(row.text):
+        if first_word(row.text) != "cancel":
             continue
-        slot = by_offer.get(fields_of(row.text).get("offer_id", ""))
+        offer_id = fields_of(row.text).get("offer_id", "")
+        slot = by_offer.get(offer_id)
         if slot:
             dropped.add(slot)
     return dropped
@@ -602,13 +629,16 @@ def _offer_line(slot: dict[str, str], number: str | None, priority: str | None) 
     return " ".join(parts)
 
 
-def _our_offer(chat: list[Message], agent: str, offer_id: str) -> dict[str, str]:
-    token = f"offer_id={offer_id}"
-    for row in chat:
-        if row.sender == agent and token in row.text.split() and "offer" in words(row.text):
-            return fields_of(row.text)
+def _our_offer(
+    chat: list[Message], agent: str, offer_id: str
+) -> dict[str, str]:
+    for row in reversed(chat):
+        if row.sender != agent:
+            continue
+        for offer in _offer_rows(row.text):
+            if offer.get("offer_id") == offer_id:
+                return offer
     return {}
-
 
 class _Gate:
     """One need's lock and how many turns hold it or wait for it."""
@@ -805,8 +835,18 @@ async def _advance_alone(
         if slot.get("slot_id") not in taken
     ]
     if chosen:
+        batch: list[dict[str, str]] = []
+        lines: list[str] = []
+
         for slot in chosen[:3]:
-            if await _say(city, citizen, _offer_line(slot, number, priority)):
+            line = _offer_line(slot, number, priority)
+            if len("\n".join(lines + [line])) > 2000:
+                break
+            batch.append(slot)
+            lines.append(line)
+
+        if lines and await _say(city, citizen, "\n".join(lines)):
+            for slot in batch:
                 sent.offers.add(slot["slot_id"])
                 if replacing:
                     sent.again.add(slot["slot_id"])
@@ -830,8 +870,10 @@ async def _on_confirm(
     facility = fields.get("facility") or offer.get("facility", "")
     if not slot or not consent:
         return
-    citizen = fields.get("citizen") or (
-        message.sender if message.sender.startswith("citizen:") else ""
+    citizen = (
+        message.sender
+        if message.sender.startswith("citizen:")
+        else fields.get("citizen", "")
     )
     number = fields.get("prescription_number") or offer.get("prescription_number")
     book_here = hold_self or message.sender.startswith("agent:") or facility == agent
@@ -1040,15 +1082,12 @@ async def _on_held(city: City, message: Message, chat: list[Message]) -> None:
         return
     _, consent, number = _booking_of(chat, city.agent_id, slot)
     if not consent:
-        consent, held_number = _latest_hold(chat, city.agent_id)
-        number = number or held_number
-    need = fields.get("need_id", "")
-    if not consent and need.startswith("N-"):
-        # The citizen's booking consent is cons-<need_id>-booking. The held line does not
-        # echo the real ref, and the hold that carried it may not be in this page of history.
-        consent = f"cons-{need}-booking"
+    _, consent, number = _booking_of(chat, city.agent_id, slot)
     if not consent:
-        _LOG.info("care.held.noconsent", extra={"need_id": need[:48]})
+        _LOG.info(
+            "care.held.noconsent",
+            extra={"need_id": fields.get("need_id", "")[:48]},
+        )
         return
     parts = [
         "commit",
