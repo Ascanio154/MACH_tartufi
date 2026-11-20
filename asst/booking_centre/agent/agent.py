@@ -76,6 +76,13 @@ _DAY_KEYS = {
     "fri": "fri", "ven": "fri",
 }
 _DAYS_RE = re.compile(r"\bdays=(\S+)", re.IGNORECASE)
+_UNREACHABLE_IT = "La struttura non è raggiungibile in questo momento."
+_UNREACHABLE_EN = "The facility can't be reached right now."
+_NO_OTHER_IT = (
+    "Al momento non ci sono altri posti disponibili: "
+    "la struttura è temporaneamente non raggiungibile."
+)
+_NO_OTHER_EN = "No other slot is available right now: the facility is temporarily unreachable."
 # Rule P1: a prescription is valid for 2 agenda days after it is issued.
 _RX_VALID_DAYS = 2
 _RENEW_IT = (
@@ -275,6 +282,16 @@ async def _say(city: City, to: str, text: str) -> bool:
     except CapError:
         return False
     return True
+
+
+async def _send(city: City, to: str, text: str) -> str | None:
+    """Like ``_say``, but returns the refusal code (e.g. ``TARGET_NOT_VISIBLE``), None if sent."""
+
+    try:
+        await city.say(to, text)
+    except CapError as error:
+        return error.code or "CAP_ERROR"
+    return None
 
 
 def _latest(chat: list[Message], head: str, token: str) -> Message | None:
@@ -886,6 +903,7 @@ async def _advance(
     *,
     fixed: str | None,
     replacing: bool,
+    avoid: str | None = None,
 ) -> None:
     key = message.need_id or message.msg_id
     gate = _GATES.get(key)
@@ -894,7 +912,9 @@ async def _advance(
     gate.turns += 1
     try:
         async with gate.lock:
-            await _advance_alone(city, message, chat, key, fixed=fixed, replacing=replacing)
+            await _advance_alone(
+                city, message, chat, key, fixed=fixed, replacing=replacing, avoid=avoid
+            )
     finally:
         gate.turns -= 1
         if gate.turns == 0 and _GATES.get(key) is gate:
@@ -909,6 +929,7 @@ async def _advance_alone(
     *,
     fixed: str | None,
     replacing: bool,
+    avoid: str | None = None,
 ) -> None:
     agent = city.agent_id
     citizen = _citizen(chat)
@@ -1013,8 +1034,14 @@ async def _advance_alone(
             facility=agent if fixed == "CONS-GIN" else None,
             procedure=procedure,
         )
-        if slot.get("slot_id") not in taken
+        if slot.get("slot_id") not in taken and slot.get("facility") != avoid
     ]
+    if avoid and not chosen:
+        # The facility is unreachable and nothing else fits here: say so instead of silence.
+        none = _NO_OTHER_IT if _lang(chat) == "it" else _NO_OTHER_EN
+        if not _exact(chat, agent, none):
+            await _say(city, citizen, none)
+        return
     if chosen:
         text = _offer_block(_pick(chosen, _days(chat)), number, priority, _lang(chat))
         if await _say(city, citizen, text):
@@ -1063,9 +1090,10 @@ async def _on_confirm(
         return
     if _we(chat, agent, f"slot_id={slot}", to=facility, word="confirm"):
         return
+    offer_id = offer_id or offer.get("offer_id", "")
     parts = [
         "confirm",
-        f"offer_id={offer_id or offer.get('offer_id', '')}",
+        f"offer_id={offer_id}",
         f"slot_id={slot}",
         f"citizen={citizen}",
         f"consent_ref={consent}",
@@ -1073,7 +1101,16 @@ async def _on_confirm(
     ]
     if number:
         parts.append(f"prescription_number={number}")
-    await _say(city, facility, " ".join(parts))
+    code = await _send(city, facility, " ".join(parts))
+    if code is None:
+        return
+    # Hospital down (TARGET_NOT_VISIBLE) or another refusal: never resend a 4xx. Tell the
+    # citizen, then offer what is still free at the other facilities.
+    _LOG.info("care.forward.refused %s", code)
+    if not _we(chat, agent, f"offer_id={offer_id}", to=citizen, word="cancel"):
+        why = _UNREACHABLE_IT if _lang(chat) == "it" else _UNREACHABLE_EN
+        await _say(city, citizen, f"cancel offer_id={offer_id} reason=facility_unavailable {why}")
+    await _advance(city, message, chat, fixed=None, replacing=True, avoid=facility)
 
 
 async def _forward_receipt(city: City, message: Message, chat: list[Message]) -> None:

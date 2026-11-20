@@ -274,5 +274,49 @@ class PrescriptionRenewal(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(offer_messages(to_citizen)), 1)  # only the original offer
 
 
+class FacilityDown(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        bc._SENT.clear()
+
+    async def confirm_first_hosp_offer(self, city: FakeCity) -> dict[str, str]:
+        await run_advance(city)
+        offers = [bc.fields_of(line) for line in offer_lines(city.sent_to(CIT)[0])]
+        target = next(o for o in offers if o["facility"] == HOSP)
+        city.down = {HOSP}
+        confirm = msg(CIT, f"confirm offer_id={target['offer_id']} consent_ref=c-1", AGENT)
+        city.chat.append(confirm)
+        city.inbound = confirm
+        await bc._desk(city, confirm, list(city.chat), hold_self=False, fixed=None)
+        return target
+
+    async def test_forward_failure_cancels_and_reoffers_other_facility(self) -> None:
+        slots = [
+            slot("S-1", "h1", "2026-11-23T14:00:00+01:00", "mon"),
+            slot("S-3", "h1", "2026-11-24T09:00:00+01:00", "tue"),
+            slot("H2-1", "h2", "2026-11-25T09:00:00+01:00", "wed", facility=HOSP2),
+            slot("H2-2", "h3", "2026-11-26T11:00:00+01:00", "thu", facility=HOSP2),
+        ]
+        city = FakeCity(booking_chat(slots=slots))
+        target = await self.confirm_first_hosp_offer(city)
+        self.assertEqual(sum(1 for to, _ in city.attempts if to == HOSP), 1)
+        to_citizen = city.sent_to(CIT)
+        cancels = [t for t in to_citizen if t.startswith("cancel ")]
+        self.assertEqual(len(cancels), 1)
+        self.assertIn(f"offer_id={target['offer_id']}", cancels[0].split())
+        self.assertIn("reason=facility_unavailable", cancels[0].split())
+        again = offer_messages(to_citizen)[-1]
+        self.assertGreater(len(offer_lines(again)), 0)
+        self.assertTrue(all(bc.fields_of(line)["facility"] == HOSP2 for line in offer_lines(again)))
+
+    async def test_forward_failure_no_alternative_says_none(self) -> None:
+        city = FakeCity(booking_chat())
+        await self.confirm_first_hosp_offer(city)
+        self.assertEqual(sum(1 for to, _ in city.attempts if to == HOSP), 1)
+        to_citizen = city.sent_to(CIT)
+        self.assertEqual(len([t for t in to_citizen if t.startswith("cancel ")]), 1)
+        self.assertEqual(len(offer_messages(to_citizen)), 1)  # only the original offer
+        self.assertTrue(any("non ci sono altri posti" in t for t in to_citizen))
+
+
 if __name__ == "__main__":
     unittest.main()
