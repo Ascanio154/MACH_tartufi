@@ -1583,9 +1583,18 @@ async def _forward_receipt(city: City, message: Message, chat: list[Message]) ->
     if not booking_id or not ledger_ref or not citizen:
         return
     token = f"booking_id={booking_id}"
-    if _we(chat, city.agent_id, token, to=citizen, word="booking.receipt"):
+    # Journey 000098 got the same receipt twice: our own sent row is not always found in the
+    # history, so remember forwarded bookings in memory too.
+    if booking_id in _RECEIPTS or _we(chat, city.agent_id, token, to=citizen, word="booking.receipt"):
         return
-    await _say(city, citizen, f"booking.receipt booking_id={booking_id} ledger_ref={ledger_ref}")
+    _RECEIPTS.add(booking_id)
+    if not await _say(
+        city, citizen, f"booking.receipt booking_id={booking_id} ledger_ref={ledger_ref}"
+    ):
+        _RECEIPTS.discard(booking_id)
+
+
+_RECEIPTS: set[str] = set()
 
 
 async def _partner_cancel(
