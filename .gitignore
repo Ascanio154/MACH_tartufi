@@ -5,3 +5,4 @@ __pycache__/
 .city/
 **/.city/
 .config/
+.DS_Store
