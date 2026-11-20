@@ -1,7 +1,7 @@
-agent_id: agent:wfj5qv50ce6a
+agent_id: agent:xtj1dk9x3qej
 team: team:tartufi-pazzi
 name: hospital
-version: 1.0.0
+version: 1.0.2
 cap_versions:
   - "1.0"
 profiles:
@@ -11,4 +11,4 @@ capabilities:
   - hospital.physiatry
 no_clinical_advice: true
 endpoints:
-  mailbox: agent:wfj5qv50ce6a
+  mailbox: agent:xtj1dk9x3qej

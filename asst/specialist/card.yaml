@@ -1,7 +1,7 @@
-agent_id: agent:qy4ezbsz6yt4
+agent_id: agent:q18es2d82f8r
 team: team:tartufi-pazzi
 name: specialist
-version: 1.0.0
+version: 1.0.2
 cap_versions:
   - "1.0"
 profiles:
@@ -11,4 +11,4 @@ capabilities:
   - specialist_care.cardiology
 no_clinical_advice: true
 endpoints:
-  mailbox: agent:qy4ezbsz6yt4
+  mailbox: agent:q18es2d82f8r

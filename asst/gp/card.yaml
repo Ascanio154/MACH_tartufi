@@ -1,7 +1,7 @@
-agent_id: agent:g77b8dgy900n
+agent_id: agent:bmrcsmqq6at2
 team: team:tartufi-pazzi
 name: gp
-version: 1.0.0
+version: 1.0.2
 cap_versions:
   - "1.0"
 profiles:
@@ -11,4 +11,4 @@ capabilities:
   - gp
 no_clinical_advice: true
 endpoints:
-  mailbox: agent:g77b8dgy900n
+  mailbox: agent:bmrcsmqq6at2

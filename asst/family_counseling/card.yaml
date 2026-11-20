@@ -1,7 +1,7 @@
-agent_id: agent:ph8y76v9qyfm
+agent_id: agent:pxvd2kk2yx5j
 team: team:tartufi-pazzi
 name: family_counseling
-version: 1.0.0
+version: 1.0.2
 cap_versions:
   - "1.0"
 profiles:
@@ -11,4 +11,4 @@ capabilities:
   - family_counseling.gynecology
 no_clinical_advice: true
 endpoints:
-  mailbox: agent:ph8y76v9qyfm
+  mailbox: agent:pxvd2kk2yx5j
