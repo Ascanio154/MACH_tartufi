@@ -105,6 +105,12 @@ _PARTNER_ASK_IT = "Nella nostra ASST non ci sono posti adatti: sto chiedendo all
 _PARTNER_ASK_EN = "No suitable slot in our ASST: I am asking the nearby ASSTs."
 _PARTNER_LEAD_IT = "Questi posti sono in un'altra ASST della rete."
 _PARTNER_LEAD_EN = "These appointments are at a partner ASST."
+# Our ASST's rare language (``*`` in _DOCTORS), from the Mondo ASST page: asst-greco-h3.
+_RARE_LANG = "si"
+# A citizen speaking a rare language needs the partner whose h3 speaks it: ask more partners.
+_MAX_PARTNERS_RARE = 6
+_NO_PARTNER_IT = "Mi dispiace: al momento non ci sono posti adatti né da noi né nelle ASST vicine."
+_NO_PARTNER_EN = "I'm sorry: right now there is no suitable slot in our ASST or the nearby ones."
 _CROSS_ASK_IT = (
     "Per prenotare in un'altra ASST mi serve il suo consenso a condividere con quella "
     "struttura i dati necessari."
@@ -411,7 +417,8 @@ def _speaks(doctor_id: str, lang: str) -> bool:
     langs = spec[0]
     if lang in langs:
         return True
-    return "*" in langs and lang not in {"it", "en"}
+    # ``*`` is OUR rare language only: our h3 speaks Sinhala, not every non-it/en language.
+    return "*" in langs and lang == _RARE_LANG
 
 
 def fitting(
@@ -762,7 +769,8 @@ async def _ask_partners(
         parts.append(f"priority={priority}")
     parts.append(token)
     sent_now = False
-    for peer in (await _partner_peers(city, procedure, ours, _district(chat)))[:_MAX_PARTNERS]:
+    limit = _MAX_PARTNERS if _lang(chat) in {"it", "en"} else _MAX_PARTNERS_RARE
+    for peer in (await _partner_peers(city, procedure, ours, _district(chat)))[:limit]:
         if await _send(city, peer.agent_id, " ".join(parts)) is None:
             entry.offers.add(f"partner:{peer.agent_id}")
             sent_now = True
@@ -1167,7 +1175,9 @@ async def _on_partner_offer(city: City, message: Message, chat: list[Message]) -
     sent = _sent(f"{key}|{number}")
     if "partner-offered" in sent.offers:
         return
-    lines: list[str] = []
+    lang, gender = _lang(chat), _gender(chat)
+    tagged: list[str] = []  # the partner told us the doctor's languages and gender
+    untagged: list[str] = []  # judged with our _DOCTORS table (same keys in every ASST)
     offer_ids: dict[str, str] = {}
     for offer in _partner_offers_in(message.text, message.sender):
         if offer["facility"] in ours:
@@ -1175,23 +1185,28 @@ async def _on_partner_offer(city: City, message: Message, chat: list[Message]) -
         raw_day = (offer.get("agenda_day") or offer.get("day", "")).lower()
         day = _DAY_KEYS.get(raw_day[:3], raw_day)
         at = offer.get("agenda_date") or offer.get("at", "")
-        lines.append(
+        line = (
             f"slot_id={offer['slot_id']} doctor_id={offer.get('doctor_id', '')} "
             f"facility={offer['facility']} procedure={offer.get('procedure', procedure)} "
             f"at={at} day={day}"
         )
+        langs = offer.get("doctor_lang", "")
+        if langs:
+            speaks = lang in {part.strip().lower() for part in langs.split("/")}
+            matches = not gender or offer.get("doctor_gender", gender) == gender
+            if speaks and matches:
+                tagged.append(line)
+        else:
+            untagged.append(line)
         offer_ids[offer["slot_id"]] = offer["offer_id"]
     taken = _offered(chat, agent, number) | sent.offers
+    # Every doctor speaks Italian in every ASST: with language and gender already checked,
+    # ``lang="it"`` keeps only the time window, deadline and working-day checks of ``fitting``.
     fits = [
         slot
-        for slot in fitting(
-            lines,
-            now=now,
-            priority=priority,
-            lang=_lang(chat),
-            gender=_gender(chat),
-            procedure=procedure,
-        )
+        for slot in fitting(tagged, now=now, priority=priority, lang="it", procedure=procedure)
+        + fitting(untagged, now=now, priority=priority, lang=lang, gender=gender,
+                  procedure=procedure)
         if slot["slot_id"] not in taken
     ]
     if not fits:
@@ -1353,7 +1368,37 @@ async def _advance_alone(
         return
     # Our ASST has nothing that fits: ask the ring partners (approach A).
     if not fits and fixed is None and priority != "P":
+        already = _partners_asked(chat, agent, key)
         await _ask_partners(city, chat, agent, citizen, procedure, priority, key)
+        # The citizen writes again and no partner slot reached them: say so, not silence.
+        if already and message.sender.startswith("citizen:") and not _partner_offered(key, number):
+            await _close_search(city, chat, agent, citizen, key)
+
+
+def _partners_asked(chat: list[Message], agent: str, key: str) -> set[str]:
+    """Partner facilities we sent this case's search to."""
+
+    token = f"request_id=x-{key}"
+    return {
+        row.recipient
+        for row in chat
+        if row.sender == agent and "need.request" in words(row.text) and token in row.text.split()
+    } | {mark.partition(":")[2] for mark in _sent(key).offers if mark.startswith("partner:")}
+
+
+def _partner_offered(key: str, number: str | None) -> bool:
+    return "partner-offered" in _sent(f"{key}|{number}").offers
+
+
+async def _close_search(city: City, chat: list[Message], agent: str, citizen: str, key: str) -> None:
+    """Once per case: nobody, here or at the partners, has a fitting slot."""
+
+    entry = _sent(key)
+    text = _NO_PARTNER_IT if _lang(chat) == "it" else _NO_PARTNER_EN
+    if "partner-closed" in entry.offers or _exact(chat, agent, text):
+        return
+    if await _say(city, citizen, text):
+        entry.offers.add("partner-closed")
 
 
 async def _on_confirm(
@@ -1549,6 +1594,24 @@ async def _partner_cancel(
     fields = fields_of(message.text)
     offer_id = fields.get("offer_id", "")
     citizen = _citizen(chat)
+    key = message.need_id or message.msg_id
+    if not offer_id and fields.get("request_id") == f"x-{key}":
+        # A partner has no slot for our search. When every partner asked said so, tell the
+        # citizen instead of leaving them waiting.
+        entry = _sent(key)
+        entry.offers.add(f"partner-no:{message.sender}")
+        refused = {mark.partition(":")[2] for mark in entry.offers if mark.startswith("partner-no:")}
+        refused |= {
+            row.sender
+            for row in chat
+            if row.sender.startswith("agent:")
+            and first_word(row.text) == "cancel"
+            and f"request_id=x-{key}" in row.text.split()
+        }
+        asked = _partners_asked(chat, city.agent_id, key)
+        if citizen and asked and asked <= refused and not _partner_offered(key, _number(chat)):
+            await _close_search(city, chat, city.agent_id, citizen, key)
+        return
     # P1: the Ledger refused the commit because the prescription expired. Offering the same
     # number again books an expired prescription, so send the citizen to the GP instead.
     expired = "EXPIR" in fields.get("reason", "").upper()

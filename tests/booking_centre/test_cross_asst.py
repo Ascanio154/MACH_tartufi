@@ -311,6 +311,56 @@ class CrossConsent(_Fresh):
         self.assertEqual(sum(1 for to, _ in requests(city) if to == PX1), 1)
 
 
+def closing(city: PartnerCity) -> list[str]:
+    return [t for t in city.sent_to(CIT) if "vicine" in t and not t.startswith("offer")
+            and "sto chiedendo" not in t]
+
+
+def lang_chat(lang: str, slots: list[str] | None = None) -> list[Message]:
+    chat = booking_chat(slots=slots)
+    chat[0] = msg(CIT, f"need.request prescription_number={RX} lang={lang}", AGENT)
+    return chat
+
+
+class NextSteps(_Fresh):
+    async def test_all_partners_no_availability_closes(self) -> None:
+        city = await asked_city()
+        asked = [to for to, _ in requests(city)]
+        for peer in asked[:-1]:
+            await partner_says(city, peer, f"cancel request_id=x-{NEED} reason=no_availability")
+        self.assertEqual(closing(city), [])
+        await partner_says(city, asked[-1], f"cancel request_id=x-{NEED} reason=no_availability")
+        self.assertEqual(len(closing(city)), 1)
+
+    async def test_citizen_resend_after_silent_search_closes(self) -> None:
+        city = await asked_city()
+        await citizen_says(city, f"need.request prescription_number={RX} lang=it ci siete?")
+        self.assertEqual(len(closing(city)), 1)
+
+    async def test_our_rare_language_only_si(self) -> None:
+        self.assertTrue(bc._speaks("ASST-1-h3", "si"))
+        self.assertFalse(bc._speaks("ASST-1-h3", "ka"))
+
+    async def test_rare_language_citizen_asks_more_partners(self) -> None:
+        many = peers() + [Peer(agent_id=f"agent:pz{i}", role="facility",
+                               capabilities=("hospital.physiatry",)) for i in range(4)]
+        city = PartnerCity(lang_chat("ka", PAST_ONLY), peers=many)
+        await advance(city)
+        self.assertEqual(len(requests(city)), 6)
+
+    async def test_partner_doctor_lang_used(self) -> None:
+        city = PartnerCity(lang_chat("ka", PAST_ONLY), peers=peers())
+        await advance(city)
+        ka = VALID_A.replace("ASST-2-h1", "ASST-2-h3") + " doctor_lang=it/ka doctor_gender=m"
+        si = (poffer("p-S", "S", "h3", "2026-11-24T10:30:00+01:00", "tue")
+              + " doctor_lang=it/si doctor_gender=m")
+        bare = poffer("p-U", "U", "h3", "2026-11-26T10:30:00+01:00", "thu")
+        await partner_says(city, PX1, "\n".join([ka, si, bare]))
+        rows = offer_rows(offer_messages(city)[0])
+        self.assertEqual([r for r in rows if "slot_id=A" in r.split()] != [], True)
+        self.assertEqual(len(rows), 1)
+
+
 def without_our_rows(city: PartnerCity) -> None:
     """Journey 000045: our own sent messages are not found in the history."""
 
