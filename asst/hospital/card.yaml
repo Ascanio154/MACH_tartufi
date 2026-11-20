@@ -1,7 +1,7 @@
 agent_id: agent:xtj1dk9x3qej
 team: team:tartufi-pazzi
 name: hospital
-version: 1.0.3
+version: 1.0.4
 cap_versions:
   - "1.0"
 profiles:
