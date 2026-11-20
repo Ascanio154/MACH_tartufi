@@ -149,7 +149,13 @@ class Sentence(unittest.TestCase):
             "Prenda ibuprofene 400mg e si riposi, la ricetta è pronta.",
             "La ricetta è pronta, priority=U per lei, contatti il centro.",
             "Your prescription is ready, please confirm with the booking centre.",
+            "La ricetta è pronta. Report, to me, any change you notice.",
+            "La ricetta è pronta, I OFFER my help if it expires before booking.",
+            "La ricetta è pronta, I offered it for you and reports will follow.",
+            "La ricetta è pronta, con il suo consenso può cancellare e riprenotare.",
+            "La ricetta è pronta: contatti il centro con questo codice: [CODICE].",
             "Probabilmente la diagnosi è una lombalgia, la ricetta è pronta.",
+            "Capisco la sua preoccupazione per la tachicardia, la ricetta è pronta.",
             "ok",
             "x" * 700,
             "",
@@ -167,6 +173,30 @@ class Sentence(unittest.TestCase):
             self.assertTrue(self.said(wait=1.0).endswith(gp._rx_note("VIS-FIS", "B")))
         finally:
             gp._LLM_WAIT = old
+
+    def test_english_citizen_gets_the_english_standard_sentence(self):
+        for text in (
+            "Dear Doctor, I have back pain and I would be grateful for a visit, please.",
+            "Hi doctor, my back pain is the worst lately, can you help me?",
+        ):
+            city = FakeCity(llm="Please report back to me, the prescription is ready for you.")
+            turn(city, CIT, text)
+            (said,) = to(city, CIT)
+            self.assertTrue(said.endswith(gp._rx_note("VIS-FIS", "B", english=True)), said)
+            self.assertEqual(understood(msg(AGENT, said)).type, "prescription")
+        self.assertFalse(gp._english(REAL[3][0]))
+        self.assertFalse(gp._english(REAL[1][0]))
+
+    def test_standard_sentences_hold_no_other_act_word(self):
+        for english in (False, True):
+            for renewed in (False, True):
+                note = gp._rx_note("VIS-CARD", "B", renewed, english=english)
+                self.assertEqual(gp._clean(note), note)
+        city = FakeCity()
+        turn(city, CIT, "Doctor, I have had chest pain since this morning, please help")
+        (said,) = to(city, CIT)
+        self.assertTrue(said.endswith(gp._URGENT_EN))
+        self.assertEqual(understood(msg(AGENT, said)).type, "escalate.emergency")
 
     def test_ledger_announcement_waits_for_the_citizen_turn(self):
         number = gp._rx(NEED, "m")
