@@ -949,6 +949,8 @@ async def _facility(
 # offer message of our own free slots; its later ``confirm`` goes through _on_confirm (hold,
 # commit with its consent_ref, receipt back to it). Same block in hospital and specialist.
 _PARTNER_MAX = 6
+# Our ASST's rare language (``*`` in _DOCTORS), from the Mondo ASST page: asst-greco-h3.
+_RARE_LANG = "si"
 
 
 def _partner_slots(
@@ -1033,7 +1035,7 @@ async def _answer_partner(city: City, message: Message, chat: list[Message]) -> 
         procedure=procedure,
     )
     if not slots:
-        await _say(city, partner, f"cancel {token} reason=no_slots")
+        await _say(city, partner, f"cancel {token} reason=no_availability")
         return
     rows: list[str] = []
     for slot in slots:
@@ -1048,6 +1050,10 @@ async def _answer_partner(city: City, message: Message, chat: list[Message]) -> 
             f"agenda_day={slot.get('day', '')}",
             f"expiry={slot['at']}",
         ]
+        spec = _DOCTORS.get(slot["doctor_id"].rsplit("-", 1)[-1])
+        if spec is not None:
+            langs = sorted(_RARE_LANG if lang == "*" else lang for lang in spec[0])
+            parts += [f"doctor_lang={'/'.join(langs)}", f"doctor_gender={spec[1]}"]
         if priority:
             parts.append(f"priority={priority}")
         parts.append(token)

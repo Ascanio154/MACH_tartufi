@@ -82,6 +82,7 @@ class _Fresh(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         bc._SENT.clear()
         bc._GATES.clear()
+        bc._CROSS_ASKED.clear()
 
 
 class AskPartners(_Fresh):
@@ -308,6 +309,38 @@ class CrossConsent(_Fresh):
         self.assertTrue(any(to == PX4 for to, _ in requests(city)))
         self.assertEqual(len(confirms_to(city, PX1)), 1)
         self.assertEqual(sum(1 for to, _ in requests(city) if to == PX1), 1)
+
+
+def without_our_rows(city: PartnerCity) -> None:
+    """Journey 000045: our own sent messages are not found in the history."""
+
+    city.chat[:] = [row for row in city.chat if row.sender != AGENT]
+
+
+class ConfirmWithoutOwnHistory(_Fresh):
+    async def test_local_confirm_rebuilt_from_offer_id(self) -> None:
+        city = PartnerCity(booking_chat(), peers=peers())
+        await advance(city)
+        without_our_rows(city)
+        await citizen_says(city, "confirm consent_ref=cons-booking offer_id=of-S-3")
+        sent = confirms_to(city, HOSP)
+        self.assertEqual(len(sent), 1)
+        for token in ("slot_id=S-3", f"citizen={CIT}", "consent_ref=cons-booking",
+                      f"prescription_number={RX}"):
+            self.assertIn(token, sent[0].split())
+
+    async def test_partner_confirm_found_in_partner_message(self) -> None:
+        city = await offered_city()
+        without_our_rows(city)
+        await citizen_says(city, "confirm offer_id=p-A consent_ref=cons-booking")
+        asks = [t for t in city.sent_to(CIT) if t.startswith("consent")]
+        self.assertEqual(len(asks), 1)
+        without_our_rows(city)
+        await citizen_says(city, "consent consent_ref=cx-1 purpose=cross_asst")
+        sent = confirms_to(city, PX1)
+        self.assertEqual(len(sent), 1)
+        self.assertIn("consent_ref=cx-1", sent[0].split())
+        self.assertIn("slot_id=A", sent[0].split())
 
 
 if __name__ == "__main__":
