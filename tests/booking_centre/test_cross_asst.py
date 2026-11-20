@@ -83,6 +83,7 @@ class _Fresh(unittest.IsolatedAsyncioTestCase):
         bc._SENT.clear()
         bc._GATES.clear()
         bc._CROSS_ASKED.clear()
+        bc._RECEIPTS.clear()
 
 
 class AskPartners(_Fresh):
@@ -391,6 +392,18 @@ class ConfirmWithoutOwnHistory(_Fresh):
         self.assertEqual(len(sent), 1)
         self.assertIn("consent_ref=cx-1", sent[0].split())
         self.assertIn("slot_id=A", sent[0].split())
+
+
+class ReceiptOnce(_Fresh):
+    async def test_receipt_forwarded_once_without_own_history(self) -> None:
+        # Journey 000098: the citizen got the same booking.receipt twice in the same second.
+        city = PartnerCity(booking_chat(), peers=peers())
+        receipt = "booking.receipt booking_id=bk-1 ledger_ref=lr-1"
+        await partner_says(city, HOSP, receipt)
+        without_our_rows(city)
+        await partner_says(city, HOSP, receipt)
+        sent = [t for t in city.sent_to(CIT) if t.startswith("booking.receipt")]
+        self.assertEqual(len(sent), 1)
 
 
 if __name__ == "__main__":
