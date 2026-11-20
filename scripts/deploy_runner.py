@@ -46,7 +46,7 @@ SMOKE = {
 }
 POLL_SECONDS = 60
 RETRIES = 3
-HEALTH_SECONDS = int(os.environ.get("DEPLOY_HEALTH_SECONDS", "300"))
+HEALTH_SECONDS = int(os.environ.get("DEPLOY_HEALTH_SECONDS", "150"))
 
 
 # --- pure helpers (unit-tested) ---------------------------------------------------------------
