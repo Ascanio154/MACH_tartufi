@@ -1713,9 +1713,20 @@ def _partner_request(message: Message) -> bool:
 
 
 def _desk_partner_slots(
-    lines: list[str], *, now: datetime, priority: str | None, procedure: str
+    lines: list[str],
+    *,
+    now: datetime,
+    priority: str | None,
+    procedure: str,
+    lang: str = "",
+    gender: str = "",
+    days: set[str] | None = None,
 ) -> list[dict[str, str]]:
-    """Free slots of any of our facilities inside the priority window, spread, at most six."""
+    """Free slots of any of our facilities inside the priority window, spread, at most six.
+
+    A partner may pass the citizen's ``lang``, ``gender`` and ``days`` (shared ring format):
+    language and gender filter by our doctor table, days only put those slots first.
+    """
 
     if priority == "U":
         horizon: datetime | None = now.replace(hour=23, minute=59, second=59, microsecond=0)
@@ -1739,9 +1750,14 @@ def _desk_partner_slots(
             continue
         if not earliest < at or (horizon is not None and at >= horizon):
             continue
+        spec = _DOCTORS.get(slot["doctor_id"].rsplit("-", 1)[-1])
+        if lang and lang not in ("it",) and spec is not None and not _speaks(slot["doctor_id"], lang):
+            continue
+        if gender in ("m", "f") and spec is not None and spec[1] != gender:
+            continue
         timed.append((at, slot))
     timed.sort(key=lambda item: (item[0], item[1]["slot_id"]))
-    return _pick([slot for _, slot in timed], set())
+    return _pick([slot for _, slot in timed], days or set())
 
 
 async def _answer_partner(city: City, message: Message, chat: list[Message]) -> None:
@@ -1791,6 +1807,9 @@ async def _answer_partner(city: City, message: Message, chat: list[Message]) -> 
         now=now,
         priority=priority,
         procedure=procedure,
+        lang=fields.get("lang", "").lower(),
+        gender=fields.get("gender", fields.get("gender_preference", "")).lower()[:1],
+        days={_DAY_KEYS.get(part[:3].lower(), "") for part in re.split(r"[/,;|]+", fields.get("days", ""))} - {""},
     )
     if not slots:
         await _say(city, partner, f"cancel {token} reason=no_availability")
@@ -2236,7 +2255,8 @@ async def _on_confirm(
         if facility and citizen:
             await _forward_confirm(city, message, chat, offer_id=offer_id or f"of-{slot}",
                                    slot=slot, citizen=citizen, consent=consent,
-                                   facility=facility, number=number)
+                                   facility=facility, number=number,
+                                   cross=fields.get("cross_asst_consent_ref", ""))
         return
     book_here = hold_self or facility == agent
     if book_here:
@@ -2254,13 +2274,14 @@ async def _on_confirm(
     if not facility or not citizen:
         return
     offer_id = offer_id or offer.get("offer_id", "")
+    cross = ""
     if facility not in _own_facilities(chat) and not offer_id.startswith("of-"):
         # A partner ASST's slot: no citizen data leaves before the cross_asst consent (P2).
         ref = _cross_consent_ref(chat, citizen)
         if not ref:
             await _ask_cross_consent(city, chat, agent, citizen, offer_id)
             return
-        consent = ref
+        consent = cross = ref
     await _forward_confirm(
         city,
         message,
@@ -2271,6 +2292,7 @@ async def _on_confirm(
         consent=consent,
         facility=facility,
         number=number,
+        cross=cross,
     )
 
 
@@ -2348,6 +2370,7 @@ async def _on_cross_consent(city: City, message: Message, chat: list[Message]) -
             consent=ref,
             facility=offer.get("facility", ""),
             number=offer.get("prescription_number") or _number(chat),
+            cross=ref,
         )
         return
     if not _we(chat, agent, f"offer_id={offer_id}", to=citizen, word="cancel"):
@@ -2366,8 +2389,13 @@ async def _forward_confirm(
     consent: str,
     facility: str,
     number: str | None,
+    cross: str = "",
 ) -> None:
-    """Send the citizen's choice to the facility that holds the slot; tell them if it fails."""
+    """Send the citizen's choice to the facility that holds the slot; tell them if it fails.
+
+    ``cross`` is the citizen's cross_asst consent: the shared ring format (Giambellino,
+    Lorenteggio) reads it as ``cross_asst_consent_ref``.
+    """
 
     agent = city.agent_id
     if not slot or not facility or not consent:
@@ -2382,6 +2410,8 @@ async def _forward_confirm(
         f"consent_ref={consent}",
         f"facility={facility}",
     ]
+    if cross:
+        parts.append(f"cross_asst_consent_ref={cross}")
     if number:
         parts.append(f"prescription_number={number}")
     code = await _send(city, facility, " ".join(parts))

@@ -244,6 +244,135 @@ def _offer_rows(text: str) -> list[dict[str, str]]:
     return [fields_of("offer_id=" + block) for block in blocks]
 
 
+# --- natural language (level 3: citizens write free text) ---------------------------------------
+# Tokens always win; these only fill what a plain sentence says. Regex only, no model call.
+
+_FC_ARRIVED = re.compile(
+    r"\b(sono arrivat[oa]|sono qui|sono in (sala|accettazione|struttura|reception)|"
+    r"sono presente|eccomi|sono all'ingresso|registro (il mio )?arrivo|check-?in|"
+    r"i'?m here|i am here|i have arrived|i'?ve arrived|just arrived|i'?m at the)"
+)
+_FC_DAYS = {
+    "lunedi": "mon", "monday": "mon", "martedi": "tue", "tuesday": "tue",
+    "mercoledi": "wed", "wednesday": "wed", "giovedi": "thu", "thursday": "thu",
+    "venerdi": "fri", "friday": "fri",
+}
+_FC_NOT = {"non", "not", "no", "tranne", "except", "escluso", "but", "mai", "never"}
+_FC_LANGS = {"inglese": "en", "english": "en", "italiano": "it", "italian": "it"}
+_FC_EN = frozenset("the i my please hello hi appointment have need book would like thanks "
+                   "thank you is want can could".split())
+_FC_IT = frozenset("il la ho per vorrei buongiorno buonasera ciao grazie prenotare sono una un "
+                   "di che mi posso devo appuntamento salve visita".split())
+_FC_FEMALE = re.compile(r"\b(dottoressa|ginecologa|medico donna|una donna|female|woman|lady)\b")
+_FC_MALE = re.compile(r"\b(ginecologo uomo|medico uomo|dottore uomo|un uomo|male doctor|a man)\b")
+_FC_YES = re.compile(
+    r"\b(si|sì|ok|okay|va bene|vabene|confermo|prenoto|prendo|scelgo|perfetto|d'accordo|"
+    r"accetto|yes|yeah|sure|confirm|book|take|choose|fine|perfect)\b"
+)
+_FC_NO = re.compile(r"\b(no|nessuno|nessuna|non voglio|rifiuto|none|neither|don't|do not)\b")
+_FC_ORDINALS = {
+    "prima": 0, "primo": 0, "first": 0, "1st": 0, "seconda": 1, "secondo": 1, "second": 1,
+    "2nd": 1, "terza": 2, "terzo": 2, "third": 2, "3rd": 2, "quarta": 3, "quarto": 3,
+    "fourth": 3, "4th": 3, "quinta": 4, "quinto": 4, "fifth": 4, "5th": 4, "sesta": 5,
+    "sesto": 5, "sixth": 5, "6th": 5, "ultima": -1, "ultimo": -1, "last": -1,
+}
+_FC_ORDINAL = re.compile(
+    r"\b(?:la|il|l'|lo|the|option|opzione|offerta|numero|number|n\.?|#)\s*"
+    r"(prima|primo|first|seconda|secondo|second|terza|terzo|third|quarta|quarto|fourth|"
+    r"quinta|quinto|fifth|sesta|sesto|sixth|ultima|ultimo|last|[1-6])\b"
+    r"|\b(first|second|third|fourth|fifth|sixth|last|1st|2nd|3rd|4th|5th|6th)\s+(?:one|slot|option)\b"
+)
+
+
+def _fc_plain(text: str) -> str:
+    lowered = unicodedata.normalize("NFKD", text.lower().replace("\u2019", "'"))
+    return "".join(ch for ch in lowered if not unicodedata.combining(ch))
+
+
+def _fc_said_days(plain: str) -> tuple[set[str], set[str]]:
+    tokens = re.findall(r"[a-z']+", plain)
+    wanted: set[str] = set()
+    excluded: set[str] = set()
+    for index, token in enumerate(tokens):
+        day = _FC_DAYS.get(token)
+        if day:
+            before = set(tokens[max(0, index - 3):index])
+            (excluded if before & _FC_NOT else wanted).add(day)
+    return wanted, excluded
+
+
+def _fc_plain_prefs(text: str) -> dict[str, str]:
+    """Language, days and doctor gender a plain sentence states."""
+    plain = _fc_plain(text)
+    found: dict[str, str] = {}
+    for word, code in _FC_LANGS.items():
+        if re.search(rf"\b{word}\b", plain):
+            found["lang"] = code
+            break
+    wanted, excluded = _fc_said_days(plain)
+    if excluded and not wanted:
+        wanted = {"mon", "tue", "wed", "thu", "fri"} - excluded
+    if wanted:
+        found["days"] = "/".join(sorted(wanted))
+    if _FC_FEMALE.search(plain):
+        found["gender"] = "f"
+    elif _FC_MALE.search(plain):
+        found["gender"] = "m"
+    return found
+
+
+def _fc_guess_lang(text: str) -> str:
+    tokens = set(re.findall(r"[a-z']+", _fc_plain(text)))
+    english, italian = len(tokens & _FC_EN), len(tokens & _FC_IT)
+    return "en" if english >= 2 and english > italian else "it"
+
+
+def _fc_arrived(text: str) -> bool:
+    return _FC_ARRIVED.search(_fc_plain(text)) is not None
+
+
+def _fc_choice(text: str, offers: list[dict[str, str]]) -> dict[str, str] | None:
+    """The offer a plain sentence picks ("la seconda", "ok mercoledì alle 10"), else None."""
+    if not offers:
+        return None
+    tokens = {token.strip(".,;:!?()\"'") for token in text.replace("=", " ").split()}
+    for offer in offers:
+        if offer.get("offer_id") in tokens or (offer.get("slot_id") and offer.get("slot_id") in tokens):
+            return offer
+    plain = _fc_plain(text)
+    hit = _FC_ORDINAL.search(plain)
+    if hit:
+        word = hit.group(1) or hit.group(2)
+        index = int(word) - 1 if word.isdigit() else _FC_ORDINALS.get(word, 99)
+        if -1 <= index < len(offers):
+            return offers[index]
+    yes = _FC_YES.search(plain) is not None
+    if _FC_NO.search(plain) and not yes:
+        return None
+    wanted, _ = _fc_said_days(plain)
+    clock = (re.search(r"\b(?:alle|ore|at|h)\s*(\d{1,2})(?:[:.](\d{2}))?\b", plain)
+             or re.search(r"\b(\d{1,2})[:.](\d{2})\b", plain))
+    if wanted or clock:
+        picks = []
+        for offer in offers:
+            at = _when(offer.get("agenda_date", offer.get("at", "")))
+            day = (offer.get("agenda_day") or "").lower()[:3]
+            if wanted and day not in wanted:
+                continue
+            if clock and (at is None or at.hour != int(clock.group(1))):
+                continue
+            picks.append(offer)
+        if len(picks) == 1 and (yes or clock):
+            return picks[0]
+    if len(offers) == 1 and yes:
+        return offers[0]
+    if len(plain.split()) <= 3:
+        digit = re.fullmatch(r"\D*([1-6])\D*", plain)
+        if digit and int(digit.group(1)) <= len(offers):
+            return offers[int(digit.group(1)) - 1]
+    return None
+
+
 def _when(value: str) -> datetime | None:
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -1093,6 +1222,9 @@ def _family_fields(row: Message) -> dict[str, str]:
 
 def _family_head(row: Message) -> str:
     head = first_word(row.text)
+    if (row.sender.startswith("citizen:") and _fc_arrived(row.text)
+            and understood(row).type == "need.request"):
+        return "checkin"
     if head in {"agenda", "slots", "world", "rules", "held", "committed", "checked_in", "refused",
                 "hold", "commit", "checkin", "offer", "confirm", "consent", "cancel",
                 "data.request", "data.response", "booking.receipt", "escalate.emergency"}:
@@ -1222,11 +1354,30 @@ async def _family_wait(
 def _family_selection(state: _FamilyCase, citizen: str) -> tuple[dict[str, str], str]:
     selected: dict[str, str] = {}
     consent = ""
+    shown: list[dict[str, str]] = []
     for row in state.rows:
+        if row.recipient == citizen and not row.sender.startswith("citizen:") and row.sender != LEDGER:
+            rows = _offer_rows(row.text)
+            if rows:
+                shown = [offer for offer in rows if offer.get("offer_id")]
+            if first_word(row.text) == "booking.receipt":
+                shown = []
+            continue
         if row.sender != citizen:
             continue
         fields = _family_fields(row)
-        if _family_head(row) == "confirm":
+        head = _family_head(row)
+        if head not in {"confirm", "consent", "checkin"} and shown:
+            # A plain choice ("la seconda", "ok mercoledì alle 10") picks one shown offer.
+            picked = _fc_choice(row.text, shown)
+            if picked is not None:
+                selected = {"offer_id": picked["offer_id"]}
+                for key in ("slot_id", "facility"):
+                    if picked.get(key):
+                        selected[key] = picked[key]
+                consent = fields.get("consent_ref", "")
+                continue
+        if head == "confirm":
             selected, consent = fields, fields.get("consent_ref", "")
         elif _family_head(row) == "consent" and fields.get("purpose", "booking") == "booking":
             if selected and fields.get("offer_id", selected.get("offer_id")) == selected.get("offer_id"):
@@ -1417,6 +1568,14 @@ async def _family_refused(
 async def _family_checkin(city: City, state: _FamilyCase, citizen: str, message: Message) -> None:
     booking = _family_fields(message).get("booking_id", "")
     if not booking:
+        # "Sono arrivata, prenotazione B-77" or just "sono arrivata": use our own receipt.
+        ours = [_family_fields(row).get("booking_id", "") for row in state.rows
+                if row.sender == city.agent_id and row.recipient == citizen
+                and first_word(row.text) == "booking.receipt"]
+        ours = [value for value in ours if value]
+        said = {token.strip(".,;:!?()\"'") for token in message.text.split()}
+        booking = next((value for value in ours if value in said), ours[-1] if ours else "")
+    if not booking:
         await _family_note(city, state, citizen, "checkin_pending")
         return
     command = f"checkin booking_id={booking} citizen={citizen}"
@@ -1444,10 +1603,14 @@ def _family_preferences(rows: list[Message], citizen: str) -> dict[str, str]:
     prefs: dict[str, str] = {}
     for row in rows:
         if row.sender == citizen:
-            fields = _family_fields(row)
+            fields = {**_fc_plain_prefs(row.text), **_family_fields(row)}
             for key in ("lang", "days", "gender", "gender_preference"):
                 if key in fields:
                     prefs[key] = fields[key].lower()
+    if "lang" not in prefs:
+        first = next((row.text for row in rows if row.sender == citizen), "")
+        if first:
+            prefs["lang"] = _fc_guess_lang(first)
     return prefs
 
 

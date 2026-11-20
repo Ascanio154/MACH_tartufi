@@ -1,0 +1,146 @@
+"""Consultorio, level 3: plain-language choice, preferences and arrival (check-in).
+
+Run from the repo root with the city-cli Python (it ships city_sdk):
+    ~/.local/share/uv/tools/city-cli/bin/python -m unittest tests.family_counseling.test_natural_language -v
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import itertools
+import unittest
+from pathlib import Path
+
+from city_sdk.city import LEDGER, Message
+
+_BRAIN = Path(__file__).resolve().parents[2] / "asst" / "family_counseling" / "agent" / "agent.py"
+_spec = importlib.util.spec_from_file_location("family_brain", _BRAIN)
+fc = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(fc)
+fc._PULL_PAUSE = 0
+
+AGENT = "agent:fc"
+CIT = "citizen:c9"
+NEED = "N-2026-11-23-0042"
+NOW = "2026-11-23T08:00:00+01:00"  # Monday
+_ids = itertools.count(1)
+SLOTS = [
+    ("G-1", "c1", "2026-11-23T14:00:00+01:00", "mon"),
+    ("G-2", "c1", "2026-11-24T10:00:00+01:00", "tue"),
+    ("G-3", "c1", "2026-11-25T11:00:00+01:00", "wed"),
+]
+
+
+def msg(sender: str, text: str, recipient: str = "") -> Message:
+    return Message(type="chat", sender=sender, msg_id=f"f-{next(_ids)}", need_id=NEED,
+                   body={"text": text}, recipient=recipient)
+
+
+class LedgerCity:
+    """A mailbox whose Ledger answers at once, so every write's reply is in history."""
+
+    def __init__(self) -> None:
+        self.agent_id = AGENT
+        self.address = ""
+        self.inbound: Message | None = None
+        self.chat: list[Message] = []
+        self.holds = 0
+
+    async def say(self, to: str, text: str, *, status: str | None = None) -> str:
+        sent = msg(AGENT, text, to)
+        self.chat.append(sent)
+        if to == LEDGER:
+            self.chat.append(msg(LEDGER, self._answer(text), AGENT))
+        return sent.msg_id
+
+    def _answer(self, text: str) -> str:
+        head = text.split()[0]
+        fields = fc.fields_of(text)
+        if head == "agenda":
+            return f"agenda agenda_now={NOW}"
+        if head == "rules":
+            return "rules none"
+        if head == "world":
+            lines = [f"slot_id={sid} doctor_id=ASST-1-{doc} facility={AGENT} procedure=CONS-GIN "
+                     f"at={at} day={day} free=1" for sid, doc, at, day in SLOTS]
+            return "slots procedure=CONS-GIN page=1/1\n" + "\n".join(lines)
+        if head == "hold":
+            self.holds += 1
+            return f"held hold_id=H-{self.holds} slot_id={fields['slot_id']} fence=1"
+        if head == "commit":
+            return f"committed booking_id=B-77 ledger_ref=L-77 hold_id={fields['hold_id']}"
+        if head == "checkin":
+            return f"checked_in booking_id={fields['booking_id']}"
+        return "ok"
+
+    async def history(self, peer: str | None = None, *, need_id: str | None = None) -> list[Message]:
+        return list(self.chat)
+
+    async def find(self, query: str) -> list:
+        return []
+
+    def to_citizen(self) -> list[str]:
+        return [row.text for row in self.chat if row.sender == AGENT and row.recipient == CIT]
+
+    def to_ledger(self, head: str) -> list[str]:
+        return [row.text for row in self.chat
+                if row.sender == AGENT and row.recipient == LEDGER and row.text.startswith(head)]
+
+
+async def citizen_says(city: LedgerCity, text: str) -> None:
+    message = msg(CIT, text, AGENT)
+    city.chat.append(message)
+    city.inbound = message
+    await fc._family(city, message, list(city.chat))
+
+
+class PlainConsultorio(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        fc._FAMILY_CASES.clear()
+
+    async def _offered(self, first: str = "Buongiorno, vorrei un appuntamento al consultorio") -> LedgerCity:
+        city = LedgerCity()
+        await citizen_says(city, first)
+        self.assertTrue(any(fc._offer_rows(text) for text in city.to_citizen()), city.to_citizen())
+        return city
+
+    def test_reads_plain_preferences(self) -> None:
+        rows = [msg(CIT, "Hi, I would like a visit, only on Wednesday, with a female doctor please")]
+        prefs = fc._family_preferences(rows, CIT)
+        self.assertEqual(prefs["lang"], "en")
+        self.assertEqual(prefs["days"], "wed")
+        self.assertEqual(prefs["gender"], "f")
+
+    def test_plain_arrival_reads_as_checkin(self) -> None:
+        self.assertEqual(fc._family_head(msg(CIT, "Sono arrivata, prenotazione B-77")), "checkin")
+        self.assertNotEqual(fc._family_head(msg(CIT, "vorrei prenotare una visita")), "checkin")
+
+    async def test_plain_day_preference_goes_first(self) -> None:
+        city = await self._offered("Buongiorno, vorrei una visita, meglio mercoledì")
+        offers = [o for text in city.to_citizen() for o in fc._offer_rows(text)]
+        self.assertEqual(offers[0]["slot_id"], "G-3")
+
+    async def test_plain_choice_then_consent_books_then_plain_arrival_checks_in(self) -> None:
+        city = await self._offered()
+        await citizen_says(city, "va bene la seconda")
+        self.assertEqual(city.to_ledger("hold"), [])
+        self.assertTrue(city.to_citizen()[-1].startswith("consent purpose=booking"))
+        await citizen_says(city, "consent consent_ref=cons-9 purpose=booking")
+        holds = city.to_ledger("hold")
+        self.assertEqual(len(holds), 1)
+        self.assertIn("slot_id=G-2", holds[0].split())
+        self.assertTrue(any(t.startswith("booking.receipt booking_id=B-77") for t in city.to_citizen()))
+        await citizen_says(city, "Buongiorno, sono arrivata in accettazione")
+        self.assertEqual(city.to_ledger("checkin"), [f"checkin booking_id=B-77 citizen={CIT}"])
+        self.assertTrue(city.to_citizen()[-1].startswith("checkin booking_id=B-77"))
+
+    async def test_choice_with_consent_in_one_sentence(self) -> None:
+        city = await self._offered()
+        await citizen_says(city, "prendo la prima, consent_ref=cons-1")
+        holds = city.to_ledger("hold")
+        self.assertEqual(len(holds), 1)
+        self.assertIn("slot_id=G-1", holds[0].split())
+
+
+if __name__ == "__main__":
+    unittest.main()

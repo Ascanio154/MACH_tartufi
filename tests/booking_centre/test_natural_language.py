@@ -384,5 +384,35 @@ class RingFormat(_Fresh):
         self.assertEqual(len(city.sent_to(HOSP)), 1)
 
 
+class LorenteggioFormat(_Fresh):
+    """Shared ring format, Lorenteggio flavour: lang/gender/days criteria, cross_asst ref."""
+
+    async def test_criteria_filter_our_answer(self) -> None:
+        city = PartnerCity(partner_case())
+        await desk(city, msg(PARTNER, "need.request service_type=hospital.physiatry "
+                                      "procedure=VIS-FIS priority=D request_id=r5 lang=en "
+                                      "gender=f days=tue", AGENT))
+        lines = offer_lines(city.sent_to(PARTNER)[0])
+        self.assertTrue(lines)
+        for line in lines:
+            self.assertIn("doctor_gender=f", line.split())
+            self.assertIn("en", line.split("doctor_lang=")[1].split()[0].split("/"))
+        self.assertIn("agenda_day=tue", lines[0].split())
+
+    async def test_forward_to_partner_carries_cross_ref(self) -> None:
+        chat = booking_chat()
+        offer = ("offer offer_id=px-1 slot_id=PS-1 doctor_id=ASST-9-h1 facility=agent:pfac "
+                 "procedure=VIS-FIS agenda_date=2026-11-24T10:00:00+01:00 agenda_day=tue")
+        chat += [msg("agent:pfac", offer, AGENT),
+                 msg(CIT, "consent consent_ref=cx-77 purpose=cross_asst", AGENT)]
+        city = PartnerCity(chat)
+        await bc._forward_confirm(city, chat[-1], chat, offer_id="px-1", slot="PS-1",
+                                  citizen=CIT, consent="cx-77", facility="agent:pfac",
+                                  number=RX, cross="cx-77")
+        sent = city.sent_to("agent:pfac")[0].split()
+        self.assertIn("consent_ref=cx-77", sent)
+        self.assertIn("cross_asst_consent_ref=cx-77", sent)
+
+
 if __name__ == "__main__":
     unittest.main()
