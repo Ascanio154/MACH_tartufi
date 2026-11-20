@@ -9,6 +9,7 @@ citizens read the act word and ``key=value`` tokens (ADR-110).
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import os
 import re
@@ -109,8 +110,14 @@ _PARTNER_LEAD_EN = "These appointments are at a partner ASST."
 _RARE_LANG = "si"
 # A citizen speaking a rare language needs the partner whose h3 speaks it: ask more partners.
 _MAX_PARTNERS_RARE = 6
-_NO_PARTNER_IT = "Mi dispiace: al momento non ci sono posti adatti né da noi né nelle ASST vicine."
-_NO_PARTNER_EN = "I'm sorry: right now there is no suitable slot in our ASST or the nearby ones."
+_NO_PARTNER_IT = (
+    "Mi dispiace: al momento non ci sono posti adatti né da noi né nelle ASST vicine. "
+    "Se può indicarmi altri giorni o un'altra preferenza sul medico, riprovo subito."
+)
+_NO_PARTNER_EN = (
+    "I'm sorry: right now there is no suitable slot in our ASST or the nearby ones. "
+    "If you can tell me other days or another doctor preference, I will search again at once."
+)
 _CROSS_ASK_IT = (
     "Per prenotare in un'altra ASST mi serve il suo consenso a condividere con quella "
     "struttura i dati necessari."
@@ -127,7 +134,7 @@ _RENEW_IT = (
     "e poi mi mandi il nuovo prescription_number."
 )
 _RENEW_EN = (
-    "Your prescription has expired: please ask your GP to renew it, "
+    "Your referral has expired: please ask your GP to renew it, "
     "then send me the new prescription_number."
 )
 
@@ -277,6 +284,164 @@ def fields_of(text: str) -> dict[str, str]:
     return found
 
 
+# --- natural language (citizens and partner agents) -----------------------------------------------
+# Citizens write in plain Italian or English, in any tone. Every reader below starts from the
+# ``key=value`` tokens (they always win) and only fills a field the tokens leave out. Pure regex
+# and word lists: no model call, so the 10 s fast reply stays safe.
+
+_TEAM_AGENTS = frozenset(
+    {
+        "agent:h3n6kfd18r3g",  # booking_centre
+        "agent:pxvd2kk2yx5j",  # family_counseling
+        "agent:bmrcsmqq6at2",  # gp
+        "agent:xtj1dk9x3qej",  # hospital
+        "agent:q18es2d82f8r",  # specialist
+    }
+)
+_RX_KEYED = re.compile(r"prescription_number[-_:\s]*([A-Za-z0-9][A-Za-z0-9-]{3,39})", re.IGNORECASE)
+_RX_SAID = re.compile(
+    r"\b(?:ricetta|impegnativa|prescrizione|prescription|rx)\b"
+    r"(?:\s*(?:numero|number|codice|code|num\b\.?|nr\b\.?|n°|n\.|no\.|n\b|#|è|e'|is\b|:))*"
+    r"\s*[:#]?\s*([A-Za-z0-9][A-Za-z0-9-]{3,39})",
+    re.IGNORECASE,
+)
+_WEEKDAY_WORDS = {
+    "lunedi": "mon", "monday": "mon",
+    "martedi": "tue", "tuesday": "tue",
+    "mercoledi": "wed", "wednesday": "wed",
+    "giovedi": "thu", "thursday": "thu",
+    "venerdi": "fri", "friday": "fri",
+}
+_NOT_WORDS = {"non", "not", "no", "tranne", "except", "escluso", "esclusi", "but", "niente", "never", "mai"}
+_LANG_WORDS = {
+    "inglese": "en", "english": "en",
+    "italiano": "it", "italian": "it",
+    "singalese": "si", "sinhala": "si", "sinhalese": "si", "cingalese": "si",
+}
+_EN_MARKERS = frozenset(
+    "the i my please hello hi appointment have need book would like thanks thank you is "
+    "want can could prescription doctor".split()
+)
+_IT_MARKERS = frozenset(
+    "il la ho per vorrei buongiorno buonasera ciao grazie prenotare ricetta sono una un di "
+    "che mi posso devo appuntamento medico salve".split()
+)
+_FEMALE = re.compile(r"\b(dottoressa|medico donna|dottore donna|una donna|female|woman|lady)\b")
+_MALE = re.compile(r"\b(medico uomo|dottore uomo|un uomo|male doctor|a man|man doctor|male)\b")
+_DISTRICT = re.compile(r"\b(?:distretto|district|zona|municipio|area)\s*(?:n\.?\s*)?(\d{1,2})\b")
+_YES = re.compile(
+    r"\b(si|sì|ok|okay|va bene|vabene|confermo|conferma|prenoto|prenota|prendo|scelgo|"
+    r"perfetto|d'accordo|daccordo|accetto|acconsento|autorizzo|yes|yeah|sure|"
+    r"confirm|book|take|choose|i'll take|fine|agree|consent|perfect)\b"
+)
+_NO = re.compile(
+    r"\b(no|non acconsento|non autorizzo|non voglio|rifiuto|nego|nessuno|nessuna|"
+    r"decline|refuse|don't|do not|none|neither)\b"
+)
+_ORDINALS = {
+    "prima": 0, "primo": 0, "first": 0, "1st": 0, "uno": 0, "one": 0,
+    "seconda": 1, "secondo": 1, "second": 1, "2nd": 1, "due": 1, "two": 1,
+    "terza": 2, "terzo": 2, "third": 2, "3rd": 2, "tre": 2, "three": 2,
+    "quarta": 3, "quarto": 3, "fourth": 3, "4th": 3, "quattro": 3, "four": 3,
+    "quinta": 4, "quinto": 4, "fifth": 4, "5th": 4, "cinque": 4, "five": 4,
+    "sesta": 5, "sesto": 5, "sixth": 5, "6th": 5, "sei": 5, "six": 5,
+    "ultima": -1, "ultimo": -1, "last": -1,
+}
+_ORDINAL = re.compile(
+    r"\b(?:la|il|l'|lo|the|option|opzione|offerta|offer|numero|number|n\.?|#)\s*"
+    r"(prima|primo|first|seconda|secondo|second|terza|terzo|third|quarta|quarto|fourth|"
+    r"quinta|quinto|fifth|sesta|sesto|sixth|ultima|ultimo|last|[1-6])\b"
+    r"|\b(first|second|third|fourth|fifth|sixth|last|1st|2nd|3rd|4th|5th|6th)\s+(?:one|slot|option)\b"
+)
+# Clinical questions the booking centre must never answer (no diagnosis, no prescription).
+_MEDICAL = re.compile(
+    r"\b(cosa devo prendere|che farmaco|quale farmaco|medicin|farmac|antidolorific|"
+    r"cosa ho|cos'ho|è grave|e' grave|is it serious|what should i take|which medicine|"
+    r"painkiller|diagnos|terapia|therapy|treatment|prescrivi|prescribe me|"
+    r"mi fai la ricetta|fammi la ricetta|give me a prescription|write me a prescription)"
+)
+
+
+def _plain(text: str) -> str:
+    """Lower case without accents, apostrophes kept: ``lunedì`` -> ``lunedi``."""
+
+    import unicodedata
+
+    lowered = unicodedata.normalize("NFKD", text.lower().replace("’", "'"))
+    return "".join(ch for ch in lowered if not unicodedata.combining(ch))
+
+
+def _said_days(plain: str) -> tuple[set[str], set[str]]:
+    """Weekdays named in free text: (wanted, excluded). ``non il lunedì`` excludes Monday."""
+
+    tokens = re.findall(r"[a-z']+", plain)
+    wanted: set[str] = set()
+    excluded: set[str] = set()
+    for index, token in enumerate(tokens):
+        day = _WEEKDAY_WORDS.get(token.rstrip("'"))
+        if day is None:
+            continue
+        before = set(tokens[max(0, index - 3) : index])
+        (excluded if before & _NOT_WORDS else wanted).add(day)
+    return wanted, excluded
+
+
+def _citizen_fields(text: str) -> dict[str, str]:
+    """``fields_of`` plus what a plain sentence says: prescription, language, days, gender, area."""
+
+    found = fields_of(text)
+    plain = _plain(text)
+    if "prescription_number" not in found or not found["prescription_number"].startswith(
+        "prescription_number-"
+    ):
+        raw = found.get("prescription_number", "")
+        if raw:
+            found["prescription_number"] = "prescription_number-" + raw.upper()
+        else:
+            hit = _RX_KEYED.search(text)
+            value = hit.group(1) if hit else ""
+            if not value:
+                said = _RX_SAID.search(text)
+                if said and any(ch.isdigit() for ch in said.group(1)):
+                    value = said.group(1)
+            if value:
+                found["prescription_number"] = "prescription_number-" + value.strip("-").upper()
+    if "lang" not in found:
+        for word, code in _LANG_WORDS.items():
+            if re.search(rf"\b{word}\b", plain):
+                found["lang"] = code
+                break
+    if "days" not in found:
+        wanted, excluded = _said_days(plain)
+        if excluded and not wanted:
+            wanted = {"mon", "tue", "wed", "thu", "fri"} - excluded
+        if wanted:
+            found["days"] = "/".join(sorted(wanted))
+    if "gender" not in found and "gender_preference" not in found:
+        if _FEMALE.search(plain):
+            found["gender"] = "f"
+        elif _MALE.search(plain):
+            found["gender"] = "m"
+    if "area.district" not in found:
+        hit = _DISTRICT.search(plain)
+        if hit:
+            found["area.district"] = hit.group(1)
+    return found
+
+
+def _guess_lang(text: str) -> str:
+    """``en`` when a sentence reads as English, ``it`` otherwise (the city default)."""
+
+    tokens = set(re.findall(r"[a-z']+", _plain(text)))
+    english = len(tokens & _EN_MARKERS)
+    italian = len(tokens & _IT_MARKERS)
+    return "en" if english >= 2 and english > italian else "it"
+
+
+def _medical_question(text: str) -> bool:
+    return _MEDICAL.search(_plain(text)) is not None
+
+
 def _when(value: str) -> datetime | None:
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -318,7 +483,23 @@ async def _say(city: City, to: str, text: str) -> bool:
         await city.say(to, text)
     except CapError:
         return False
+    _remember_sent(to, text)
     return True
+
+
+def _remember_sent(to: str, text: str) -> None:
+    """Mark the citizen as answered in this turn; keep the offers we just sent them."""
+
+    if not to.startswith("citizen:"):
+        return
+    flag = _REPLIED.get()
+    if flag is not None:
+        flag[0] = True
+    offers = _offers_in(text)
+    if offers:
+        _LAST_OFFERS[to] = offers
+        while len(_LAST_OFFERS) > _SENT_NEEDS:
+            _LAST_OFFERS.pop(next(iter(_LAST_OFFERS)))
 
 
 async def _send(city: City, to: str, text: str) -> str | None:
@@ -328,6 +509,7 @@ async def _send(city: City, to: str, text: str) -> str | None:
         await city.say(to, text)
     except CapError as error:
         return error.code or "CAP_ERROR"
+    _remember_sent(to, text)
     return None
 
 
@@ -476,13 +658,6 @@ def fitting(
 
 
 # --- medico di base ----------------------------------------------------------------------------
-
-
-def _emergency(message: Message) -> bool:
-    if understood(message).body.get("is_emergency") is True:
-        return True
-    lowered = message.text.lower()
-    return any(flag in lowered for flag in _RED_FLAGS)
 
 
 def _symptom(message: Message) -> str | None:
@@ -709,7 +884,7 @@ def _district(chat: list[Message]) -> int | None:
 
     for row in chat:
         if row.sender.startswith("citizen:"):
-            raw = fields_of(row.text).get("area.district", "")
+            raw = _citizen_fields(row.text).get("area.district", "")
             if raw.isdigit():
                 return int(raw)
     return None
@@ -732,6 +907,7 @@ async def _partner_peers(
         peer
         for peer in found
         if peer.agent_id not in ours
+        and peer.agent_id not in _TEAM_AGENTS
         and (not peer.capabilities or capability in tuple(peer.capabilities))
     ]
     keep.sort(key=lambda peer: district is None or peer.district != district)
@@ -857,43 +1033,57 @@ def _withdrawn(chat: list[Message], agent: str) -> set[str]:
 def _number(chat: list[Message]) -> str | None:
     for row in reversed(chat):
         if row.sender.startswith("citizen:"):
-            number = fields_of(row.text).get("prescription_number")
+            number = _citizen_fields(row.text).get("prescription_number")
             if number:
                 return number
     return None
 
 
 def _lang(chat: list[Message]) -> str:
+    """The citizen's language: ``lang=``, a named language, else how their first message reads."""
+
+    first = ""
     for row in chat:
         if row.sender.startswith("citizen:"):
-            lang = fields_of(row.text).get("lang", "")
+            lang = _citizen_fields(row.text).get("lang", "")
             if lang:
-                return lang
-    return "it"
+                return lang.lower()
+            first = first or row.text
+    return _guess_lang(first) if first else "it"
 
 
 def _gender(chat: list[Message]) -> str | None:
+    """The latest doctor-gender preference the citizen stated."""
+
+    found: str | None = None
     for row in chat:
         if not row.sender.startswith("citizen:"):
             continue
-        raw = fields_of(row.text).get("gender_preference") or fields_of(row.text).get("gender")
+        said = _citizen_fields(row.text)
+        raw = (said.get("gender_preference") or said.get("gender") or "").lower()[:1]
         if raw in {"m", "f"}:
-            return raw
-    return None
+            found = raw
+    return found
 
 
 def _days(chat: list[Message]) -> set[str]:
-    """Days the citizen prefers (``days=mon/wed``, any case, English or Italian)."""
+    """Days the citizen prefers (``days=mon/wed`` or plain words); the latest statement wins."""
 
     found: set[str] = set()
     for row in chat:
         if not row.sender.startswith("citizen:"):
             continue
+        stated: set[str] = set()
         for raw in _DAYS_RE.findall(row.text):
             for part in re.split(r"[/,;|]+", raw.lower()):
                 key = _DAY_KEYS.get(part.strip(".:!?()\"'")[:3])
                 if key:
-                    found.add(key)
+                    stated.add(key)
+        if not stated:
+            said = _citizen_fields(row.text).get("days", "")
+            stated = {part for part in said.split("/") if part in _DAY_KEYS.values()}
+        if stated:
+            found = stated
     return found
 
 
@@ -973,8 +1163,9 @@ def _find_offer(chat: list[Message], agent: str, offer_id: str) -> dict[str, str
     if found:
         return found
     number = _number(chat)
-    if offer_id.startswith("of-"):
-        slot_id = offer_id[3:]
+    if offer_id.startswith(("of-", "p-")):
+        # of-<slot>: our offer to a citizen; p-<slot>: our offer to another ASST.
+        slot_id = offer_id.partition("-")[2]
         for row in chat:
             if row.sender != LEDGER or first_word(row.text) != "slots":
                 continue
@@ -985,7 +1176,8 @@ def _find_offer(chat: list[Message], agent: str, offer_id: str) -> dict[str, str
                     if number:
                         rebuilt["prescription_number"] = number
                     return rebuilt
-        return {}
+        if offer_id.startswith("of-"):
+            return {}
     for row in chat:
         if not row.sender.startswith("agent:") or row.sender == agent:
             continue
@@ -1050,31 +1242,604 @@ async def _desk(
 ) -> None:
     if message.sender == city.agent_id:
         return
+    if fixed is not None or not message.sender.startswith("citizen:"):
+        await _desk_turn(city, message, chat, hold_self=hold_self, fixed=fixed)
+        return
+    # A citizen always gets an answer in the same turn: the review marks a message left
+    # without reply as passive (-1). _say flags every message that reaches the citizen.
+    flag = _REPLIED.set([False])
+    try:
+        await _desk_turn(city, message, chat, hold_self=hold_self, fixed=fixed)
+        if not _REPLIED.get()[0]:
+            await _no_silence(city, message, chat)
+    finally:
+        _REPLIED.reset(flag)
+
+
+async def _desk_turn(
+    city: City,
+    message: Message,
+    chat: list[Message],
+    *,
+    hold_self: bool,
+    fixed: str | None,
+) -> None:
     kind = words(message.text)
-    if "confirm" in kind and (
-        message.sender.startswith("citizen:") or message.sender.startswith("agent:")
+    head = first_word(message.text)
+    citizen_turn = message.sender.startswith("citizen:")
+    agent_turn = message.sender.startswith("agent:")
+    if citizen_turn and fixed is None and _emergency(message):
+        # Red flag: no booking, no advice, the emergency line only.
+        if not _we(chat, city.agent_id, "escalate.emergency", to=message.sender,
+                   word="escalate.emergency"):
+            sentence = _EMERGENCY_IT if _lang(chat) == "it" else _EMERGENCY_EN
+            await _say(city, message.sender, f"escalate.emergency reason=red_flag {sentence}")
+        return
+    key = message.need_id or message.msg_id
+    if agent_turn and fixed is None and head not in _ACT_WORDS and message.sender in (
+        _partners_asked(chat, city.agent_id, key)
     ):
+        # A partner we asked answers in plain words. "No availability" closes its part.
+        if _NO_AVAILABILITY.search(_plain(message.text)):
+            refusal = Message(type="chat", sender=message.sender, msg_id=message.msg_id,
+                              need_id=message.need_id, recipient=message.recipient,
+                              body={"text": f"cancel request_id=x-{key} reason=no_availability"})
+            await _partner_cancel(city, refusal, chat, fixed=fixed)
+        return
+    if agent_turn and fixed is None and _partner_request(message):
+        await _answer_partner(city, message, chat)
+        return
+    if "confirm" in kind and (citizen_turn or agent_turn):
         await _on_confirm(city, message, chat, hold_self=hold_self)
         return
-    if "booking.receipt" in kind and message.sender.startswith("agent:"):
+    if "booking.receipt" in kind and agent_turn:
         await _forward_receipt(city, message, chat)
         return
-    if "cancel" in kind and message.sender.startswith("agent:"):
+    if "cancel" in kind and agent_turn:
         await _partner_cancel(city, message, chat, fixed=fixed)
         return
-    if "offer" in kind and message.sender.startswith("agent:"):
+    if "offer" in kind and agent_turn:
         key = message.need_id or message.msg_id
         await _locked(key, lambda: _on_partner_offer(city, message, chat))
         return
+    if agent_turn and fixed is None:
+        await _agent_note(city, message, chat)
+        return
     if (
-        message.sender.startswith("citizen:")
+        citizen_turn
         and "prescription_number=" not in message.text
         and _open_cross_ask(chat, city.agent_id, message.sender)
     ):
         await _on_cross_consent(city, message, chat)
         return
-    if message.sender == LEDGER or message.sender.startswith("citizen:"):
+    if citizen_turn and fixed is None:
+        if _open_booking_ask(message.sender) and head not in {"need.request"}:
+            await _on_booking_consent(city, message, chat)
+            return
+        offers = _open_offers(chat, city.agent_id, message.sender)
+        new_number = _citizen_fields(message.text).get("prescription_number")
+        same_case = new_number is None or any(
+            offer.get("prescription_number") in (None, new_number) for offer in offers
+        )
+        if offers and same_case:
+            picked = _choice(message.text, offers)
+            if picked is not None:
+                await _on_confirm(city, message, chat, hold_self=hold_self, picked=picked)
+                return
+            if _changes_preferences(message.text):
+                # New days or doctor preference: send the slots again, preferred ones first.
+                await _advance(city, message, chat, fixed=fixed, replacing=True)
+                return
+        if _medical_question(message.text):
+            await _say(city, message.sender, _phrase("medical", _lang(chat)))
+        if _booked(chat, city.agent_id, message.sender):
+            return  # already booked: _no_silence answers with the next step, never new offers
+    if message.sender == LEDGER or citizen_turn:
         await _advance(city, message, chat, fixed=fixed, replacing=False)
+
+
+# --- every citizen gets an answer; partner agents get one too -----------------------------------
+
+# Set per citizen turn by _desk; _say flips it when something reaches the citizen.
+_REPLIED: contextvars.ContextVar[list[bool] | None] = contextvars.ContextVar(
+    "booking_replied", default=None
+)
+# Offers this process last sent to each citizen (our own sent rows can be missing from history).
+_LAST_OFFERS: dict[str, list[dict[str, str]]] = {}
+# Citizen -> offer whose booking consent we asked for; the value counts the asks.
+_BOOK_ASKED: dict[str, tuple[str, int]] = {}
+# Citizen -> offer forwarded to the facility, waiting for the receipt.
+_PENDING: dict[str, str] = {}
+# Need -> the agent (another ASST's booking centre) whose confirm we forwarded.
+_CONFIRMED_BY: dict[str, str] = {}
+# Citizens whose receipt we forwarded.
+_BOOKED: set[str] = set()
+# (agent, need) pairs we already explained our message format to.
+_AGENT_NOTED: set[tuple[str, str]] = set()
+
+_EMERGENCY_IT = "Questa è un'emergenza: chiami subito il 112. Non prenoto una visita ordinaria."
+_EMERGENCY_EN = "This is an emergency: call 112 now. I am not booking a routine visit."
+_CHEST = r"\b(petto|torace|sterno|chest)\b"
+_CHEST_BAD = (
+    r"\b(dolor|male?\b|peso\b|pesante|oppress|opprim|stringe|stretta|schiacci|brucia|"
+    r"fitt[ae]\b|morsa|costri|pain|hurt|ach(e|es|ing)\b|tight|pressure|crush|heavy|squeez)"
+)
+_LEGS = r"\b(gamb[ae]|legs?)\b"
+_LEGS_BAD = (
+    r"\b(forza|debol|non (le )?sento|non riesco a muover|non si muov|cedono|paralizz|"
+    r"intorpidit|insensibil|strength|weak|numb|can'?t (feel|move)|cannot (feel|move)|paraly)"
+)
+_RED_FLAG_RE = tuple(
+    re.compile(rf"{a}.{{0,40}}{b}|{b}.{{0,40}}{a}", re.DOTALL)
+    for a, b in ((_CHEST, _CHEST_BAD), (_LEGS, _LEGS_BAD))
+) + (re.compile(r"\binfarto\b|heart attack|\bictus\b|\bstroke\b|non riesco a respirare|can'?t breathe"),)
+
+# Sentences around the tokens. None of them holds an act word on its own (offer, confirm,
+# cancel, consent, prescription, report, checkin, hold): understood() reads the LAST act word
+# in a text as the act, so a stray one would change what the citizen and the judge read.
+_PHRASES: dict[str, tuple[str, str]] = {
+    "medical": (
+        "Sono il centro prenotazioni: non posso dare diagnosi, consigli sui farmaci o ricette. "
+        "Per questo si rivolga al suo medico di base; io intanto la aiuto a fissare la visita.",
+        "I am the booking centre: I cannot give diagnoses, medicine advice or medical "
+        "referrals. Please ask your GP about that; meanwhile I can help you book the visit.",
+    ),
+    "need_number": (
+        "Buongiorno, la aiuto volentieri a prenotare. Mi scrive il numero della ricetta del "
+        "medico di base (per esempio prescription_number=prescription_number-ABCD)? Se vuole, "
+        "mi dica anche lingua, giorni preferiti o se preferisce un medico uomo o donna.",
+        "Hello, I am glad to help you book. Could you send me the number your GP gave you "
+        "(for example prescription_number=prescription_number-ABCD)? You can also tell me "
+        "your language, preferred days, or whether you prefer a male or female doctor.",
+    ),
+    "bad_number": (
+        "Non trovo questa ricetta nel registro. Può ricontrollare il numero e riscrivermelo "
+        "esattamente come lo ha ricevuto dal medico di base?",
+        "I can't find this number in the register. Could you check it and send it again "
+        "exactly as your GP wrote it?",
+    ),
+    "checking": (
+        "Sto verificando la ricetta e i posti liberi: le mando le proposte appena pronte.",
+        "I am checking your referral and the free slots: I will send you the options shortly.",
+    ),
+    "offers_open": (
+        "Le proposte che le ho inviato sono ancora valide: mi scriva l'offer_id che preferisce, "
+        "oppure semplicemente 'la prima', 'la seconda' e così via. Se preferisce altri giorni "
+        "o un medico uomo o donna, me lo dica e cerco di nuovo.",
+        "The options I sent you are still open: write me the offer_id you prefer, or simply "
+        "'the first one', 'the second one' and so on. If you prefer other days or a male or "
+        "female doctor, tell me and I will search again.",
+    ),
+    "partners_wait": (
+        "Sto ancora aspettando la risposta delle ASST vicine: le scrivo appena ho un posto.",
+        "I am still waiting for the nearby ASSTs to answer: I will write as soon as I have a slot.",
+    ),
+    "pending": (
+        "Ho inoltrato la sua scelta alla struttura: le giro la ricevuta appena arriva.",
+        "I passed your choice to the facility: I will forward the receipt as soon as it arrives.",
+    ),
+    "booked": (
+        "La sua prenotazione è registrata. Il giorno della visita si presenti alla struttura "
+        "con il booking_id della ricevuta per registrare l'arrivo. Buona giornata!",
+        "Your booking is registered. On the day of the visit go to the facility with the "
+        "booking_id from your receipt to register your arrival. Have a nice day!",
+    ),
+    "unknown_offer": (
+        "Non trovo questa proposta tra quelle che le ho inviato.",
+        "I can't find this option among the ones I sent you.",
+    ),
+    "book_consent": (
+        "Per completare la prenotazione mi serve il suo consenso a usare i dati necessari.",
+        "To complete the booking I need your agreement to use the necessary data.",
+    ),
+    "book_consent_again": (
+        "Grazie! Per registrarla mi serve il riferimento del suo consenso (consent_ref).",
+        "Thank you! To register it I need the reference of your agreement (consent_ref).",
+    ),
+    "book_declined": (
+        "Va bene, non prenoto nulla senza il suo consenso. Le proposte restano valide se "
+        "cambia idea.",
+        "All right, I won't book anything without your agreement. The options stay open if "
+        "you change your mind.",
+    ),
+    "receipt": (
+        "Prenotazione confermata. Il giorno della visita si presenti alla struttura con questo "
+        "booking_id per registrare l'arrivo.",
+        "Booking confirmed. On the day of the visit go to the facility with this booking_id "
+        "to register your arrival.",
+    ),
+}
+_ACT_WORDS = frozenset(
+    {"need.request", "offer", "confirm", "cancel", "prescription", "consent", "data.request",
+     "data.response", "checkin", "report", "booking.receipt", "escalate.emergency", "hold",
+     "case.closed"}
+)
+
+
+def _phrase(
+    name: str,
+    lang: str,
+    *,
+    chat: list[Message] | None = None,
+    agent: str = "",
+    citizen: str = "",
+) -> str:
+    italian, english = _PHRASES[name]
+    text = english if lang == "en" else italian
+    if name == "unknown_offer" and chat is not None:
+        ids = [o.get("offer_id", "") for o in _open_offers(chat, agent, citizen) if o.get("offer_id")]
+        if ids:
+            listed = " ".join(f"offer_id={oid}" for oid in ids[:_MAX_OFFERS])
+            more = "Quelle aperte sono:" if lang != "en" else "The open ones are:"
+            text = f"{text} {more} {listed}"
+    return text
+
+
+def _emergency(message: Message) -> bool:
+    if understood(message).body.get("is_emergency") is True:
+        return True
+    lowered = message.text.lower()
+    if any(flag in lowered for flag in _RED_FLAGS):
+        return True
+    return any(pattern.search(lowered) for pattern in _RED_FLAG_RE)
+
+
+def _booked(chat: list[Message], agent: str, citizen: str) -> bool:
+    return citizen in _BOOKED or any(
+        row.sender == agent and row.recipient in ("", citizen)
+        and first_word(row.text) == "booking.receipt"
+        for row in chat
+    )
+
+
+def _open_offers(chat: list[Message], agent: str, citizen: str) -> list[dict[str, str]]:
+    """The offers the citizen can still pick: our latest offer message, minus cancelled ones."""
+
+    if not citizen or citizen in _PENDING:
+        return []
+    latest: list[dict[str, str]] = []
+    cancelled: set[str] = set()
+    booked = False
+    for row in chat:
+        if row.sender != agent or row.recipient not in ("", citizen):
+            continue
+        found = _offers_in(row.text)
+        if found:
+            latest = found
+        head = first_word(row.text)
+        if head == "cancel":
+            cancelled.add(fields_of(row.text).get("offer_id", ""))
+        if head == "booking.receipt":
+            booked = True
+    if booked:
+        return []
+    remembered = _LAST_OFFERS.get(citizen, [])
+    pool = remembered or latest
+    return [o for o in pool if o.get("offer_id") not in cancelled and o.get("offer_id")]
+
+
+def _choice(text: str, offers: list[dict[str, str]]) -> dict[str, str] | None:
+    """Which open offer a plain sentence picks, or None when it picks none for sure."""
+
+    if not offers:
+        return None
+    tokens = {token.strip(".,;:!?()\"'") for token in text.replace("=", " ").split()}
+    named = fields_of(text)
+    for offer in offers:
+        oid, sid = offer.get("offer_id", ""), offer.get("slot_id", "")
+        if named.get("offer_id") == oid or named.get("slot_id") == sid or oid in tokens:
+            return offer
+        if sid and sid in tokens:
+            return offer
+    plain = _plain(text)
+    hit = _ORDINAL.search(plain)
+    if hit:
+        word = hit.group(1) or hit.group(2)
+        index = int(word) - 1 if word.isdigit() else _ORDINALS.get(word, 99)
+        if -1 <= index < len(offers):
+            return offers[index]
+    yes = _YES.search(plain) is not None
+    no = _NO.search(plain) is not None and not yes
+    if no:
+        return None
+    wanted, _ = _said_days(plain)
+    clock = re.search(r"\b(?:alle|ore|at|h)\s*(\d{1,2})(?:[:.](\d{2}))?\b", plain) or re.search(
+        r"\b(\d{1,2})[:.](\d{2})\b", plain
+    )
+    if wanted or clock:
+        picks = []
+        for offer in offers:
+            day = (offer.get("agenda_day") or "").lower()[:3]
+            at = _when(offer.get("agenda_date", ""))
+            if wanted and day not in wanted:
+                continue
+            if clock and (at is None or at.hour != int(clock.group(1))):
+                continue
+            picks.append(offer)
+        if len(picks) == 1 and (yes or clock):
+            return picks[0]
+    if len(offers) == 1 and yes:
+        return offers[0]
+    if len(plain.split()) <= 3:
+        digit = re.fullmatch(r"\D*([1-6])\D*", plain)
+        if digit and int(digit.group(1)) <= len(offers):
+            return offers[int(digit.group(1)) - 1]
+    return None
+
+
+def _changes_preferences(text: str) -> bool:
+    said = _citizen_fields(text)
+    return bool(said.get("days") or said.get("gender") or said.get("gender_preference"))
+
+
+def _open_booking_ask(citizen: str) -> str:
+    return _BOOK_ASKED.get(citizen, ("", 0))[0]
+
+
+async def _ask_booking_consent(
+    city: City, chat: list[Message], agent: str, citizen: str, offer_id: str
+) -> None:
+    """The citizen picked an offer without a consent_ref: ask for it, once per offer."""
+
+    asked, count = _BOOK_ASKED.get(citizen, ("", 0))
+    if asked == offer_id and count:
+        return
+    sentence = _phrase("book_consent", _lang(chat))
+    if await _say(city, citizen, f"consent purpose=booking offer_id={offer_id} {sentence}"):
+        _BOOK_ASKED[citizen] = (offer_id, 1)
+
+
+async def _on_booking_consent(city: City, message: Message, chat: list[Message]) -> None:
+    """The answer to our booking consent question: book, ask once more, or stop politely."""
+
+    citizen = message.sender
+    offer_id, count = _BOOK_ASKED.get(citizen, ("", 0))
+    ref = _citizen_fields(message.text).get("consent_ref", "")
+    lang = _lang(chat)
+    if ref:
+        _BOOK_ASKED.pop(citizen, None)
+        await _on_confirm(city, message, chat, hold_self=False, picked={"offer_id": offer_id},
+                          consent_ref=ref)
+        return
+    plain = _plain(message.text)
+    if _YES.search(plain) and count < 2:
+        _BOOK_ASKED[citizen] = (offer_id, count + 1)
+        sentence = _phrase("book_consent_again", lang)
+        await _say(
+            city,
+            citizen,
+            f"data.request purpose=booking fields=consent_ref offer_id={offer_id} {sentence}",
+        )
+        return
+    # A plain answer without the field we asked for is a refusal (kit rules): move on.
+    _BOOK_ASKED.pop(citizen, None)
+    await _say(city, citizen, _phrase("book_declined", lang))
+
+
+async def _no_silence(city: City, message: Message, chat: list[Message]) -> None:
+    """Nothing reached the citizen this turn: tell them where their booking stands."""
+
+    citizen = message.sender
+    try:
+        fresh = await city.history(need_id=message.need_id)
+    except CapError:
+        fresh = chat
+    known = {row.msg_id for row in fresh}
+    fresh = list(fresh) + [row for row in chat if row.msg_id not in known]
+    agent = city.agent_id
+    lang = _lang(fresh)
+    key = message.need_id or message.msg_id
+    number = _number(fresh)
+    if _booked(fresh, agent, citizen):
+        name = "booked"
+    elif citizen in _PENDING:
+        name = "pending"
+    elif _open_offers(fresh, agent, citizen):
+        name = "offers_open"
+    elif _partners_asked(fresh, agent, key) and not _partner_offered(key, number):
+        name = "partners_wait"
+    elif not number:
+        sentence = _phrase("need_number", lang)
+        await _say(city, citizen, f"data.request purpose=booking fields=prescription_number {sentence}")
+        return
+    else:
+        row = _rx_line(fresh, agent, number)
+        name = "bad_number" if row is not None and first_word(row.text) == "refused" else "checking"
+        if name == "bad_number":
+            sentence = _phrase(name, lang)
+            await _say(
+                city, citizen, f"data.request purpose=booking fields=prescription_number {sentence}"
+            )
+            return
+    await _say(city, citizen, _phrase(name, lang))
+
+
+# --- other ASSTs (and our own agents) writing to the booking centre -----------------------------
+
+_SERVICE_PROCEDURE = {
+    "hospital.physiatry": "VIS-FIS",
+    "specialist_care.cardiology": "VIS-CARD",
+    "family_counseling.gynecology": "CONS-GIN",
+}
+_PROCEDURE_WORDS = (
+    ("VIS-FIS", re.compile(r"\b(vis-fis|fisiatr|physiatr|fisioterap|physiother|riabilit|rehab)")),
+    ("CTRL-CARD", re.compile(r"\b(ctrl-card|controllo cardiolog|cardiology follow)")),
+    ("VIS-CARD", re.compile(r"\b(vis-card|cardiolog|cardio)")),
+    ("CONS-GIN", re.compile(r"\b(cons-gin|ginecolog|gynaecolog|gynecolog|consultorio)")),
+)
+_NO_AVAILABILITY = re.compile(
+    r"\b(nessun|non (abbiamo|ci sono|c'e)|niente|esaurit|no (slot|availability|free)|"
+    r"not available|unavailable|fully booked|none available|we have no)"
+)
+_SLOT_WORDS = re.compile(
+    r"\b(slot|posti|posto|disponibilit|availability|available|appointment|appuntament|"
+    r"agenda|need\.request)"
+)
+
+
+def _partner_fields(text: str) -> dict[str, str]:
+    """Search criteria from a partner's request, tokens first, then plain words."""
+
+    found = fields_of(text)
+    plain = _plain(text)
+    if not found.get("procedure"):
+        mapped = _SERVICE_PROCEDURE.get(found.get("service_type", ""))
+        if mapped:
+            found["procedure"] = mapped
+        else:
+            for procedure, pattern in _PROCEDURE_WORDS:
+                if pattern.search(plain):
+                    found["procedure"] = procedure
+                    break
+    if not found.get("priority"):
+        hit = re.search(r"\b(?:priorit[a-z]*|priority)\s*[:=]?\s*([ubdp])\b", plain)
+        if hit:
+            found["priority"] = hit.group(1).upper()
+    return found
+
+
+def _partner_request(message: Message) -> bool:
+    """An agent asks us for slots: ``need.request`` or a plain question naming a visit."""
+
+    if message.sender in _TEAM_AGENTS:
+        return False
+    if first_word(message.text) == "need.request":
+        return True
+    head = first_word(message.text)
+    if head in _ACT_WORDS:
+        return False
+    plain = _plain(message.text)
+    return bool(_SLOT_WORDS.search(plain)) and bool(_partner_fields(message.text).get("procedure"))
+
+
+def _desk_partner_slots(
+    lines: list[str], *, now: datetime, priority: str | None, procedure: str
+) -> list[dict[str, str]]:
+    """Free slots of any of our facilities inside the priority window, spread, at most six."""
+
+    if priority == "U":
+        horizon: datetime | None = now.replace(hour=23, minute=59, second=59, microsecond=0)
+    elif priority == "P":
+        horizon = None
+    else:
+        horizon = now + timedelta(days=_DEADLINE_DAYS.get(priority or "", 14))
+    earliest = now + _LEAD
+    timed: list[tuple[datetime, dict[str, str]]] = []
+    for line in lines:
+        slot = fields_of(line)
+        at = _when(slot.get("at", ""))
+        if not slot.get("slot_id") or not slot.get("doctor_id") or not slot.get("facility"):
+            continue
+        if at is None or slot.get("procedure") not in (None, procedure):
+            continue
+        free = slot.get("free")
+        if free is not None and free.isdigit() and int(free) <= 0:
+            continue
+        if slot.get("urgent_reserve", "").lower() == "true" and priority != "U":
+            continue
+        if not earliest < at or (horizon is not None and at >= horizon):
+            continue
+        timed.append((at, slot))
+    timed.sort(key=lambda item: (item[0], item[1]["slot_id"]))
+    return _pick([slot for _, slot in timed], set())
+
+
+async def _answer_partner(city: City, message: Message, chat: list[Message]) -> None:
+    """Another ASST asks our desk for slots: ONE message of offers at our facilities, or a cancel.
+
+    The offers name the facility (``facility=``) that holds and commits, so the partner can
+    confirm there directly; a confirm sent to us is forwarded (see _on_confirm).
+    """
+
+    agent = city.agent_id
+    partner = message.sender
+    fields = _partner_fields(message.text)
+    procedure = fields.get("procedure", "")
+    priority = fields.get("priority")
+    request_id = fields.get("request_id") or f"rq-{message.msg_id}"
+    token = f"request_id={request_id}"
+    if any(row.sender == agent and row.recipient == partner and token in row.text.split()
+           for row in chat):
+        return
+    if not procedure:
+        await _say(
+            city,
+            partner,
+            f"cancel {token} reason=missing_procedure Please name the visit with procedure= "
+            "(VIS-FIS, VIS-CARD or CONS-GIN) and priority=.",
+        )
+        return
+    query = f"world procedure={procedure} page=1"
+    if not any(row.sender == agent and row.text.strip() == query for row in chat):
+        await _say(city, LEDGER, query)
+    if _ledger(chat, "agenda") is None and not _exact(chat, agent, "agenda"):
+        await _say(city, LEDGER, "agenda")
+
+    def ready(rows: list[Message]) -> bool:
+        world = _latest_slots(rows)
+        return world is not None and procedure in world and _ledger(rows, "agenda") is not None
+
+    chat = await _until(city, message.need_id, chat, ready)
+    world = _latest_slots(chat)
+    agenda = _ledger(chat, "agenda")
+    now = _when("" if agenda is None else agenda.get("agenda_now", ""))
+    if world is None or now is None:
+        await _say(city, partner, f"cancel {token} reason=ledger_unavailable")
+        return
+    slots = _desk_partner_slots(
+        [line for line in world.splitlines() if "slot_id=" in line],
+        now=now,
+        priority=priority,
+        procedure=procedure,
+    )
+    if not slots:
+        await _say(city, partner, f"cancel {token} reason=no_availability")
+        return
+    rows: list[str] = []
+    for slot in slots:
+        parts = [
+            "offer",
+            f"offer_id=p-{slot['slot_id']}",
+            f"slot_id={slot['slot_id']}",
+            f"doctor_id={slot['doctor_id']}",
+            f"facility={slot['facility']}",
+            f"procedure={procedure}",
+            f"agenda_date={slot['at']}",
+            f"agenda_day={slot.get('day', '')}",
+            f"expiry={slot['at']}",
+        ]
+        spec = _DOCTORS.get(slot["doctor_id"].rsplit("-", 1)[-1])
+        if spec is not None:
+            langs = sorted(_RARE_LANG if lang == "*" else lang for lang in spec[0])
+            parts += [f"doctor_lang={'/'.join(langs)}", f"doctor_gender={spec[1]}"]
+        if priority:
+            parts.append(f"priority={priority}")
+        parts.append(token)
+        line = " ".join(parts)
+        if len("\n".join([*rows, line])) > _MAX_TEXT:
+            break
+        rows.append(line)
+    await _say(city, partner, "\n".join(rows))
+
+
+async def _agent_note(city: City, message: Message, chat: list[Message]) -> None:
+    """An agent wrote something we cannot act on: explain our format once, never loop."""
+
+    if message.sender in _TEAM_AGENTS or message.sender == LEDGER:
+        return
+    if first_word(message.text) in _ACT_WORDS:
+        return
+    mark = (message.sender, message.need_id or message.msg_id)
+    if mark in _AGENT_NOTED:
+        return
+    _AGENT_NOTED.add(mark)
+    await _say(
+        city,
+        message.sender,
+        "data.request purpose=coordination fields=procedure,priority,request_id "
+        "Booking centre here: to ask for our free slots, write to us with service_type=... "
+        "procedure=... priority=... request_id=... (search criteria only, no citizen data).",
+    )
 
 
 async def _advance(
@@ -1259,6 +2024,18 @@ async def _advance_alone(
             if _expired(row.text, chat):
                 await _ask_renewal(city, citizen, number, _lang(chat), chat, agent, key)
                 return
+            if first_word(row.text) == "refused":
+                # Unknown number (often typed by hand): ask for it again, once per number.
+                entry = _sent(key)
+                if f"bad-rx:{number}" not in entry.offers:
+                    sentence = _phrase("bad_number", _lang(chat))
+                    if await _say(
+                        city,
+                        citizen,
+                        f"data.request purpose=booking fields=prescription_number {sentence}",
+                    ):
+                        entry.offers.add(f"bad-rx:{number}")
+                return
         priority = None if reply is None else reply.get("priority")
         if priority == "P":
             offer_id = f"wl-{message.need_id or message.msg_id}"
@@ -1369,7 +2146,11 @@ async def _advance_alone(
     # Our ASST has nothing that fits: ask the ring partners (approach A).
     if not fits and fixed is None and priority != "P":
         already = _partners_asked(chat, agent, key)
-        await _ask_partners(city, chat, agent, citizen, procedure, priority, key)
+        asked = await _ask_partners(city, chat, agent, citizen, procedure, priority, key)
+        # No partner to ask (empty Index, error): say so now instead of leaving them waiting.
+        if not asked:
+            await _close_search(city, chat, agent, citizen, key)
+            return
         # The citizen writes again and no partner slot reached them: say so, not silence.
         if already and message.sender.startswith("citizen:") and not _partner_offered(key, number):
             await _close_search(city, chat, agent, citizen, key)
@@ -1402,22 +2183,62 @@ async def _close_search(city: City, chat: list[Message], agent: str, citizen: st
 
 
 async def _on_confirm(
-    city: City, message: Message, chat: list[Message], *, hold_self: bool
+    city: City,
+    message: Message,
+    chat: list[Message],
+    *,
+    hold_self: bool,
+    picked: dict[str, str] | None = None,
+    consent_ref: str = "",
 ) -> None:
     agent = city.agent_id
     fields = fields_of(message.text)
+    if picked is not None:
+        # A plain-language choice ("la seconda", "ok mercoledì"): the offer we sent decides.
+        fields = {key: value for key, value in fields.items() if key in ("consent_ref",)}
+        fields["offer_id"] = picked.get("offer_id", "")
+    if consent_ref:
+        fields["consent_ref"] = consent_ref
     offer_id = fields.get("offer_id", "")
     consent = fields.get("consent_ref", "")
+    if not offer_id and message.sender.startswith("citizen:"):
+        bare = _choice(message.text, _open_offers(chat, agent, message.sender))
+        if bare is not None:
+            offer_id = bare.get("offer_id", "")
     offer = _find_offer(chat, agent, offer_id)
     slot = fields.get("slot_id") or offer.get("slot_id", "")
     facility = fields.get("facility") or offer.get("facility", "")
-    if not slot or not consent:
-        return
     citizen = fields.get("citizen") or (
         message.sender if message.sender.startswith("citizen:") else ""
     )
+    if message.sender.startswith("citizen:") and not hold_self:
+        if not slot:
+            # An offer id we never sent, or none at all: say which ones are open.
+            await _say(city, message.sender, _phrase("unknown_offer", _lang(chat), chat=chat,
+                                                     agent=agent, citizen=message.sender))
+            return
+        partner_slot = bool(facility) and facility not in _own_facilities(chat) and not (
+            offer_id or f"of-{slot}"
+        ).startswith("of-")
+        if not consent and not partner_slot:
+            await _ask_booking_consent(city, chat, agent, message.sender, offer_id or f"of-{slot}")
+            return
+        _BOOK_ASKED.pop(message.sender, None)
+        if not consent:
+            consent = "pending-cross-asst"  # replaced by the cross_asst ref below
+    if not slot or not consent:
+        return
     number = fields.get("prescription_number") or offer.get("prescription_number")
-    book_here = hold_self or message.sender.startswith("agent:") or facility == agent
+    if message.sender.startswith("agent:") and not hold_self and facility != agent:
+        # Another agent confirms a slot we offered it: the facility books, not the desk (our
+        # grant cannot hold). Forward it and send the receipt back to that agent.
+        _CONFIRMED_BY[message.need_id or message.msg_id] = message.sender
+        if facility and citizen:
+            await _forward_confirm(city, message, chat, offer_id=offer_id or f"of-{slot}",
+                                   slot=slot, citizen=citizen, consent=consent,
+                                   facility=facility, number=number)
+        return
+    book_here = hold_self or facility == agent
     if book_here:
         if not _we(chat, agent, f"slot_id={slot}", to=LEDGER, word="hold"):
             parts = ["hold", f"slot_id={slot}"]
@@ -1565,10 +2386,16 @@ async def _forward_confirm(
         parts.append(f"prescription_number={number}")
     code = await _send(city, facility, " ".join(parts))
     if code is None:
+        if citizen.startswith("citizen:") and not message.sender.startswith("agent:"):
+            _PENDING[citizen] = offer_id
         return
     # Hospital down (TARGET_NOT_VISIBLE) or another refusal: never resend a 4xx. Tell the
     # citizen, then offer what is still free at the other facilities.
     _LOG.info("care.forward.refused %s", code)
+    if message.sender.startswith("agent:"):
+        # Another ASST's confirm: tell that ASST, never their citizen directly.
+        await _say(city, message.sender, f"cancel offer_id={offer_id} reason=facility_unavailable")
+        return
     if not _we(chat, agent, f"offer_id={offer_id}", to=citizen, word="cancel"):
         why = _UNREACHABLE_IT if _lang(chat) == "it" else _UNREACHABLE_EN
         await _say(city, citizen, f"cancel offer_id={offer_id} reason=facility_unavailable {why}")
@@ -1579,17 +2406,30 @@ async def _forward_receipt(city: City, message: Message, chat: list[Message]) ->
     fields = fields_of(message.text)
     booking_id = fields.get("booking_id", "")
     ledger_ref = fields.get("ledger_ref", "")
+    partner = _CONFIRMED_BY.get(message.need_id or message.msg_id, "")
+    if partner and booking_id and ledger_ref and message.sender != partner:
+        # The booking was another ASST's: the receipt goes back to its booking centre.
+        if booking_id not in _RECEIPTS:
+            _RECEIPTS.add(booking_id)
+            if not await _say(
+                city, partner, f"booking.receipt booking_id={booking_id} ledger_ref={ledger_ref}"
+            ):
+                _RECEIPTS.discard(booking_id)
+        return
     citizen = _citizen(chat)
     if not booking_id or not ledger_ref or not citizen:
         return
+    _PENDING.pop(citizen, None)
+    _BOOKED.add(citizen)
     token = f"booking_id={booking_id}"
     # Journey 000098 got the same receipt twice: our own sent row is not always found in the
     # history, so remember forwarded bookings in memory too.
     if booking_id in _RECEIPTS or _we(chat, city.agent_id, token, to=citizen, word="booking.receipt"):
         return
     _RECEIPTS.add(booking_id)
+    sentence = _phrase("receipt", _lang(chat))
     if not await _say(
-        city, citizen, f"booking.receipt booking_id={booking_id} ledger_ref={ledger_ref}"
+        city, citizen, f"booking.receipt booking_id={booking_id} ledger_ref={ledger_ref} {sentence}"
     ):
         _RECEIPTS.discard(booking_id)
 
@@ -1604,6 +2444,14 @@ async def _partner_cancel(
     offer_id = fields.get("offer_id", "")
     citizen = _citizen(chat)
     key = message.need_id or message.msg_id
+    partner = _CONFIRMED_BY.get(key, "")
+    if partner and message.sender != partner and offer_id:
+        # Our facility refused a slot another ASST confirmed through us: tell that ASST.
+        reason = fields.get("reason", "facility_cancelled")
+        await _say(city, partner, f"cancel offer_id={offer_id} reason={reason}")
+        return
+    if citizen and offer_id and _PENDING.get(citizen) == offer_id:
+        _PENDING.pop(citizen, None)
     if not offer_id and fields.get("request_id") == f"x-{key}":
         # A partner has no slot for our search. When every partner asked said so, tell the
         # citizen instead of leaving them waiting.
