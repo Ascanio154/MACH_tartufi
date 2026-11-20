@@ -61,6 +61,38 @@ _PULL_TRIES = 24
 _PULL_PAUSE = 0.25
 # Needs whose sent offers this process remembers; the oldest is forgotten first.
 _SENT_NEEDS = 4096
+# Every slot goes in ONE offer message: the citizen chooses in that turn, and a later message
+# does not enter a choice already made. A citizen message holds at most 2000 characters.
+_MAX_OFFERS = 6
+_MAX_TEXT = 2000
+_OFFER_IT = "Ecco gli appuntamenti disponibili: mi indichi l'offer_id che preferisce."
+_OFFER_EN = "Here are the available appointments: tell me the offer_id you prefer."
+# Citizen ``days=`` in English or Italian, keyed by the first three letters.
+_DAY_KEYS = {
+    "mon": "mon", "lun": "mon",
+    "tue": "tue", "mar": "tue",
+    "wed": "wed", "mer": "wed",
+    "thu": "thu", "gio": "thu",
+    "fri": "fri", "ven": "fri",
+}
+_DAYS_RE = re.compile(r"\bdays=(\S+)", re.IGNORECASE)
+_UNREACHABLE_IT = "La struttura non è raggiungibile in questo momento."
+_UNREACHABLE_EN = "The facility can't be reached right now."
+_NO_OTHER_IT = (
+    "Al momento non ci sono altri posti disponibili: "
+    "la struttura è temporaneamente non raggiungibile."
+)
+_NO_OTHER_EN = "No other slot is available right now: the facility is temporarily unreachable."
+# Rule P1: a prescription is valid for 2 agenda days after it is issued.
+_RX_VALID_DAYS = 2
+_RENEW_IT = (
+    "La ricetta risulta scaduta: chieda il rinnovo al suo medico di base "
+    "e poi mi mandi il nuovo prescription_number."
+)
+_RENEW_EN = (
+    "Your prescription has expired: please ask your GP to renew it, "
+    "then send me the new prescription_number."
+)
 
 
 def role_of() -> str:
@@ -250,6 +282,16 @@ async def _say(city: City, to: str, text: str) -> bool:
     except CapError:
         return False
     return True
+
+
+async def _send(city: City, to: str, text: str) -> str | None:
+    """Like ``_say``, but returns the refusal code (e.g. ``TARGET_NOT_VISIBLE``), None if sent."""
+
+    try:
+        await city.say(to, text)
+    except CapError as error:
+        return error.code or "CAP_ERROR"
+    return None
 
 
 def _latest(chat: list[Message], head: str, token: str) -> Message | None:
@@ -497,6 +539,119 @@ def _ledger(chat: list[Message], head: str) -> dict[str, str] | None:
     return found
 
 
+def _ledger_row(chat: list[Message], head: str) -> Message | None:
+    found: Message | None = None
+    for row in chat:
+        if row.sender == LEDGER and first_word(row.text) == head:
+            found = row
+    return found
+
+
+def _rx_asked(chat: list[Message], agent: str, number: str) -> int:
+    """Index of our latest ``prescription prescription_number=<number>`` read, else -1."""
+
+    token = f"prescription_number={number}"
+    asked = -1
+    for index, row in enumerate(chat):
+        if row.sender == agent and first_word(row.text) == "prescription" and token in row.text.split():
+            asked = index
+    return asked
+
+
+def _rx_line(chat: list[Message], agent: str, number: str) -> Message | None:
+    """The Ledger's answer about THIS prescription number, never an older number's."""
+
+    asked = _rx_asked(chat, agent, number)
+    for index, row in enumerate(chat):
+        if row.sender != LEDGER:
+            continue
+        head = first_word(row.text)
+        if head != "prescription" and not (head == "refused" and "prescription" in words(row.text)):
+            continue
+        named = fields_of(row.text).get("prescription_number")
+        if named and named != number:
+            continue
+        if (asked >= 0 and index > asked) or (asked < 0 and named == number):
+            return row
+    return None
+
+
+def _agenda_span(start: datetime, end: datetime) -> timedelta:
+    """Agenda time between two instants. The agenda has no weekends."""
+
+    span = end - start
+    day = start.date() + timedelta(days=1)
+    while day < end.date():
+        if day.weekday() >= 5:
+            span -= timedelta(days=1)
+        day += timedelta(days=1)
+    return span
+
+
+def _p1_active(chat: list[Message], now: datetime | None) -> bool:
+    """Rule P1 (prescriptions valid 2 agenda days) is in the latest ``rules`` reply and in force."""
+
+    row = _ledger_row(chat, "rules")
+    if row is None:
+        return False
+    tokens = [token.strip(".,;:()") for token in row.text.split()]
+    for index, token in enumerate(tokens):
+        if token not in ("P1", "rule_id=P1"):
+            continue
+        for later in tokens[index + 1 :]:
+            if later.startswith("rule_id="):
+                break
+            if later.startswith("effective_agenda="):
+                when = _when(later.partition("=")[2])
+                return when is None or now is None or when <= now
+        return True
+    return False
+
+
+def _expired(text: str, chat: list[Message]) -> bool:
+    """The Ledger's prescription answer says expired, or P1 is in force and it is too old."""
+
+    fields = fields_of(text)
+    flag = fields.get("expired", "").lower()
+    if flag in ("true", "false"):
+        return flag == "true"
+    if "expir" in fields.get("state", "").lower() or fields.get("valid", "").lower() == "false":
+        return True
+    if "EXPIRED" in text.upper():
+        return True
+    agenda = _ledger(chat, "agenda")
+    now = _when("" if agenda is None else agenda.get("agenda_now", ""))
+    if now is None or not _p1_active(chat, now):
+        return False
+    for key in ("issued_at", "issued", "issued_agenda"):
+        issued = _when(fields.get(key, ""))
+        if issued is not None:
+            return _agenda_span(issued, now) >= timedelta(days=_RX_VALID_DAYS)
+    return False
+
+
+async def _ask_renewal(
+    city: City, citizen: str, number: str, lang: str, chat: list[Message], agent: str, key: str
+) -> None:
+    """Send the citizen to the GP for a renewal, once per expired number."""
+
+    entry = _sent(key)
+    mark = f"renewal:{number}"
+    token = f"prescription_number={number}"
+    if mark in entry.offers or any(
+        row.sender == agent
+        and "data.request" in words(row.text)
+        and "purpose=prescription_renewal" in row.text.split()
+        and token in row.text.split()
+        for row in chat
+    ):
+        return
+    sentence = _RENEW_IT if lang == "it" else _RENEW_EN
+    text = f"data.request purpose=prescription_renewal fields=prescription_number {token} {sentence}"
+    if await _say(city, citizen, text):
+        entry.offers.add(mark)
+
+
 def _latest_slots(chat: list[Message]) -> str | None:
     found: str | None = None
     for row in chat:
@@ -522,14 +677,27 @@ def _asked(chat: list[Message], agent: str, procedure: str, page: int) -> bool:
     return False
 
 
-def _offered(chat: list[Message], agent: str) -> set[str]:
+def _offers_in(text: str) -> list[dict[str, str]]:
+    """One field map per ``offer`` line: one message carries every offered slot."""
+
+    return [
+        fields_of(line)
+        for line in text.splitlines()
+        if first_word(line) == "offer" and "offer_id=" in line
+    ]
+
+
+def _offered(chat: list[Message], agent: str, number: str | None = None) -> set[str]:
     found: set[str] = set()
     for row in chat:
-        if row.sender != agent or "offer" not in words(row.text):
+        if row.sender != agent:
             continue
-        slot = fields_of(row.text).get("slot_id")
-        if slot:
-            found.add(slot)
+        for offer in _offers_in(row.text):
+            if number and offer.get("prescription_number") not in (None, number):
+                continue
+            slot = offer.get("slot_id")
+            if slot:
+                found.add(slot)
     return found
 
 
@@ -538,13 +706,13 @@ def _withdrawn(chat: list[Message], agent: str) -> set[str]:
 
     by_offer: dict[str, str] = {}
     for row in chat:
-        if row.sender != agent or "offer" not in words(row.text):
+        if row.sender != agent:
             continue
-        fields = fields_of(row.text)
-        offer_id = fields.get("offer_id")
-        slot = fields.get("slot_id")
-        if offer_id and slot:
-            by_offer[offer_id] = slot
+        for offer in _offers_in(row.text):
+            offer_id = offer.get("offer_id")
+            slot = offer.get("slot_id")
+            if offer_id and slot:
+                by_offer[offer_id] = slot
     dropped: set[str] = set()
     for row in chat:
         if "cancel" not in words(row.text):
@@ -583,6 +751,53 @@ def _gender(chat: list[Message]) -> str | None:
     return None
 
 
+def _days(chat: list[Message]) -> set[str]:
+    """Days the citizen prefers (``days=mon/wed``, any case, English or Italian)."""
+
+    found: set[str] = set()
+    for row in chat:
+        if not row.sender.startswith("citizen:"):
+            continue
+        for raw in _DAYS_RE.findall(row.text):
+            for part in re.split(r"[/,;|]+", raw.lower()):
+                key = _DAY_KEYS.get(part.strip(".:!?()\"'")[:3])
+                if key:
+                    found.add(key)
+    return found
+
+
+def _pick(slots: list[dict[str, str]], days: set[str], limit: int = _MAX_OFFERS) -> list[dict[str, str]]:
+    """Preferred days first, then one slot per doctor and day before any repeat."""
+
+    order = sorted(
+        slots,
+        key=lambda s: (bool(days) and s.get("day") not in days, s.get("at", ""), s.get("slot_id", "")),
+    )
+    first: list[dict[str, str]] = []
+    rest: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for slot in order:
+        key = (slot.get("doctor_id", ""), slot.get("day", ""))
+        (rest if key in seen else first).append(slot)
+        seen.add(key)
+    return (first + rest)[:limit]
+
+
+def _offer_block(
+    slots: list[dict[str, str]], number: str | None, priority: str | None, lang: str
+) -> str:
+    """One message, one ``offer`` line per slot, kept under the citizen text limit."""
+
+    sentence = _OFFER_IT if lang == "it" else _OFFER_EN
+    lines: list[str] = []
+    for slot in slots[:_MAX_OFFERS]:
+        line = _offer_line(slot, number, priority)
+        if len("\n".join([*lines, line, sentence])) > _MAX_TEXT:
+            break
+        lines.append(line)
+    return "\n".join([*lines, sentence])
+
+
 def _offer_line(slot: dict[str, str], number: str | None, priority: str | None) -> str:
     parts = [
         "offer",
@@ -603,10 +818,12 @@ def _offer_line(slot: dict[str, str], number: str | None, priority: str | None) 
 
 
 def _our_offer(chat: list[Message], agent: str, offer_id: str) -> dict[str, str]:
-    token = f"offer_id={offer_id}"
     for row in chat:
-        if row.sender == agent and token in row.text.split() and "offer" in words(row.text):
-            return fields_of(row.text)
+        if row.sender != agent:
+            continue
+        for offer in _offers_in(row.text):
+            if offer.get("offer_id") == offer_id:
+                return offer
     return {}
 
 
@@ -686,6 +903,7 @@ async def _advance(
     *,
     fixed: str | None,
     replacing: bool,
+    avoid: str | None = None,
 ) -> None:
     key = message.need_id or message.msg_id
     gate = _GATES.get(key)
@@ -694,7 +912,9 @@ async def _advance(
     gate.turns += 1
     try:
         async with gate.lock:
-            await _advance_alone(city, message, chat, key, fixed=fixed, replacing=replacing)
+            await _advance_alone(
+                city, message, chat, key, fixed=fixed, replacing=replacing, avoid=avoid
+            )
     finally:
         gate.turns -= 1
         if gate.turns == 0 and _GATES.get(key) is gate:
@@ -709,6 +929,7 @@ async def _advance_alone(
     *,
     fixed: str | None,
     replacing: bool,
+    avoid: str | None = None,
 ) -> None:
     agent = city.agent_id
     citizen = _citizen(chat)
@@ -723,7 +944,17 @@ async def _advance_alone(
     world = _latest_slots(chat)
     # Ask, then read the reply from history: the push of a ledger message does not open a turn.
     for _pass in range(3):
-        reply = _ledger(chat, "prescription")
+        number = _number(chat)
+        row = _rx_line(chat, agent, number) if number and fixed is None else None
+        reply = None if row is None else fields_of(row.text)
+        rules = _ledger_row(chat, "rules")
+        if rules is not None:
+            _LOG.info("care.ledger.rules %s", rules.text[:300])
+        if row is not None and number:
+            _LOG.info("care.ledger.rx %s", row.text[:300])
+            if _expired(row.text, chat):
+                await _ask_renewal(city, citizen, number, _lang(chat), chat, agent, key)
+                return
         priority = None if reply is None else reply.get("priority")
         if priority == "P":
             offer_id = f"wl-{message.need_id or message.msg_id}"
@@ -736,22 +967,22 @@ async def _advance_alone(
                     sent.offers.add(offer_id)
             return
         procedure = fixed or (None if reply is None else reply.get("procedure"))
-        number = _number(chat)
         if fixed is None and number and not procedure:
             if _pass == 2:
                 return
-            if not any(
-                row.sender == agent and f"prescription_number={number}" in row.text.split()
-                for row in chat
-            ):
+            if row is None and _rx_asked(chat, agent, number) < 0:
                 await _say(city, LEDGER, f"prescription prescription_number={number}")
             if not _exact(chat, agent, "agenda"):
                 await _say(city, LEDGER, "agenda")
+            # The rules in force ride along with the first reads; nothing waits on them.
+            if not _exact(chat, agent, "rules"):
+                await _say(city, LEDGER, "rules")
+            asked = number
             chat = await _until(
                 city,
                 message.need_id,
                 chat,
-                lambda rows: _has_procedure(rows) and _has_agenda(rows),
+                lambda rows: _rx_line(rows, agent, asked) is not None and _has_agenda(rows),
             )
             continue
         if not procedure:
@@ -782,7 +1013,8 @@ async def _advance_alone(
         return
     # A cancel drops every offer the citizen was holding, so the ones still free are sent again,
     # once per cancel: a second turn for the same cancel or refusal does not repeat them.
-    sent = _sent(key)
+    # Offers are tracked per prescription number: a renewed number starts with a fresh offer.
+    sent = _sent(f"{key}|{number}")
     if replacing:
         trigger = fields_of(message.text).get("offer_id") or message.msg_id
         if sent.trigger != trigger:
@@ -790,7 +1022,7 @@ async def _advance_alone(
             sent.again = set()
         taken = _withdrawn(chat, agent) | sent.again
     else:
-        taken = _offered(chat, agent) | sent.offers
+        taken = _offered(chat, agent, number) | sent.offers
     chosen = [
         slot
         for slot in fitting(
@@ -802,14 +1034,21 @@ async def _advance_alone(
             facility=agent if fixed == "CONS-GIN" else None,
             procedure=procedure,
         )
-        if slot.get("slot_id") not in taken
+        if slot.get("slot_id") not in taken and slot.get("facility") != avoid
     ]
+    if avoid and not chosen:
+        # The facility is unreachable and nothing else fits here: say so instead of silence.
+        none = _NO_OTHER_IT if _lang(chat) == "it" else _NO_OTHER_EN
+        if not _exact(chat, agent, none):
+            await _say(city, citizen, none)
+        return
     if chosen:
-        for slot in chosen[:3]:
-            if await _say(city, citizen, _offer_line(slot, number, priority)):
-                sent.offers.add(slot["slot_id"])
+        text = _offer_block(_pick(chosen, _days(chat)), number, priority, _lang(chat))
+        if await _say(city, citizen, text):
+            for offer in _offers_in(text):
+                sent.offers.add(offer["slot_id"])
                 if replacing:
-                    sent.again.add(slot["slot_id"])
+                    sent.again.add(offer["slot_id"])
         return
     if taken and not replacing:
         return
@@ -851,9 +1090,10 @@ async def _on_confirm(
         return
     if _we(chat, agent, f"slot_id={slot}", to=facility, word="confirm"):
         return
+    offer_id = offer_id or offer.get("offer_id", "")
     parts = [
         "confirm",
-        f"offer_id={offer_id or offer.get('offer_id', '')}",
+        f"offer_id={offer_id}",
         f"slot_id={slot}",
         f"citizen={citizen}",
         f"consent_ref={consent}",
@@ -861,7 +1101,16 @@ async def _on_confirm(
     ]
     if number:
         parts.append(f"prescription_number={number}")
-    await _say(city, facility, " ".join(parts))
+    code = await _send(city, facility, " ".join(parts))
+    if code is None:
+        return
+    # Hospital down (TARGET_NOT_VISIBLE) or another refusal: never resend a 4xx. Tell the
+    # citizen, then offer what is still free at the other facilities.
+    _LOG.info("care.forward.refused %s", code)
+    if not _we(chat, agent, f"offer_id={offer_id}", to=citizen, word="cancel"):
+        why = _UNREACHABLE_IT if _lang(chat) == "it" else _UNREACHABLE_EN
+        await _say(city, citizen, f"cancel offer_id={offer_id} reason=facility_unavailable {why}")
+    await _advance(city, message, chat, fixed=None, replacing=True, avoid=facility)
 
 
 async def _forward_receipt(city: City, message: Message, chat: list[Message]) -> None:
@@ -883,12 +1132,22 @@ async def _partner_cancel(
     fields = fields_of(message.text)
     offer_id = fields.get("offer_id", "")
     citizen = _citizen(chat)
+    # P1: the Ledger refused the commit because the prescription expired. Offering the same
+    # number again books an expired prescription, so send the citizen to the GP instead.
+    expired = "EXPIR" in fields.get("reason", "").upper()
+    reason = "prescription_expired" if expired else "facility_cancelled"
     if (
         offer_id
         and citizen
         and not _we(chat, city.agent_id, f"offer_id={offer_id}", to=citizen, word="cancel")
     ):
-        await _say(city, citizen, f"cancel offer_id={offer_id} reason=facility_cancelled")
+        await _say(city, citizen, f"cancel offer_id={offer_id} reason={reason}")
+    if expired:
+        number = _our_offer(chat, city.agent_id, offer_id).get("prescription_number") or _number(chat)
+        if citizen and number:
+            key = message.need_id or message.msg_id
+            await _ask_renewal(city, citizen, number, _lang(chat), chat, city.agent_id, key)
+        return
     await _advance(city, message, chat, fixed=fixed, replacing=True)
 
 
