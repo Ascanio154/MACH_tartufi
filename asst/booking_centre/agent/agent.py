@@ -9,6 +9,7 @@ citizens read the act word and ``key=value`` tokens (ADR-110).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import re
@@ -92,6 +93,64 @@ _RENEW_IT = (
 _RENEW_EN = (
     "Your prescription has expired: please ask your GP to renew it, "
     "then send me the new prescription_number."
+)
+# Cross-ASST (the ring): when nothing in our ASST fits, ask partner facilities found with
+# city.find. They get search criteria only; citizen data leaves only after the citizen's
+# consent with purpose cross_asst (rule P2). Our five live agents are never a partner.
+_OWN_AGENTS = frozenset(
+    {
+        "agent:h3n6kfd18r3g",  # booking_centre
+        "agent:bmrcsmqq6at2",  # gp
+        "agent:xtj1dk9x3qej",  # hospital
+        "agent:q18es2d82f8r",  # specialist
+        "agent:pxvd2kk2yx5j",  # family_counseling
+    }
+)
+_SERVICE = {
+    "VIS-FIS": "hospital.physiatry",
+    "VIS-CARD": "specialist_care.cardiology",
+    "CONS-GIN": "family_counseling.gynecology",
+}
+_MAX_PARTNERS = 3
+_WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+# No act word in this sentence: the partner (and the judge) must read it as a need.request.
+_ASK_PARTNER = (
+    "Please send your free slots for this procedure and priority, "
+    "with slot_id, doctor_id, agenda_date and agenda_day."
+)
+_CROSS_IT = (
+    "Nella nostra ASST non ci sono posti adatti alla sua ricetta. Posso cercare e prenotare "
+    "presso un'ASST partner? Dovrei condividere con loro la sua ricetta: se è d'accordo, "
+    "mi invii il suo consent_ref."
+)
+_CROSS_EN = (
+    "Our ASST has no suitable slot for your prescription. May I look for one and book it at "
+    "a partner ASST? I would share your prescription with them: if you agree, send me your "
+    "consent_ref."
+)
+_PARTNER_OFFER_IT = (
+    "Nella nostra ASST non c'erano posti adatti: questi appuntamenti sono presso un'ASST "
+    "partner. Mi indichi l'offer_id che preferisce."
+)
+_PARTNER_OFFER_EN = (
+    "Our ASST had no suitable slot: these appointments are at a partner ASST. "
+    "Tell me the offer_id you prefer."
+)
+_DECLINED_IT = (
+    "Va bene, rispetto la sua scelta: senza il suo consenso non condivido i suoi dati con "
+    "altre ASST. Nella nostra ASST al momento non ci sono posti adatti."
+)
+_DECLINED_EN = (
+    "Understood, I respect your choice: without your consent I won't share your data with "
+    "another ASST. Our ASST has no suitable slot right now."
+)
+_NONE_IT = (
+    "Mi dispiace: al momento non trovo posti adatti alla sua ricetta, né nella nostra ASST "
+    "né presso le ASST partner."
+)
+_NONE_EN = (
+    "Sorry: right now I can't find a suitable slot for your prescription, neither in our "
+    "ASST nor at a partner ASST."
 )
 
 
@@ -784,11 +843,16 @@ def _pick(slots: list[dict[str, str]], days: set[str], limit: int = _MAX_OFFERS)
 
 
 def _offer_block(
-    slots: list[dict[str, str]], number: str | None, priority: str | None, lang: str
+    slots: list[dict[str, str]],
+    number: str | None,
+    priority: str | None,
+    lang: str,
+    sentence: str | None = None,
 ) -> str:
     """One message, one ``offer`` line per slot, kept under the citizen text limit."""
 
-    sentence = _OFFER_IT if lang == "it" else _OFFER_EN
+    if sentence is None:
+        sentence = _OFFER_IT if lang == "it" else _OFFER_EN
     lines: list[str] = []
     for slot in slots[:_MAX_OFFERS]:
         line = _offer_line(slot, number, priority)
@@ -881,8 +945,25 @@ async def _desk(
     if message.sender == city.agent_id:
         return
     kind = words(message.text)
+    from_agent = message.sender.startswith("agent:")
+    if from_agent and not hold_self and _partner_segments(message.text):
+        # A partner facility answered our cross-ASST need.request with its slots.
+        await _advance(city, message, chat, fixed=fixed, replacing=False)
+        return
+    if (
+        message.sender.startswith("citizen:")
+        and "consent" in kind
+        and "confirm" not in kind
+        and fields_of(message.text).get("consent_ref")
+    ):
+        # The cross_asst consent may arrive after the citizen chose a partner slot.
+        pending = _pending_partner_confirm(chat, city.agent_id, message.sender)
+        if pending is not None:
+            await _on_confirm(city, pending, chat, hold_self=hold_self)
+            return
+    # The booking centre never holds: an agent's confirm is not ours to book.
     if "confirm" in kind and (
-        message.sender.startswith("citizen:") or message.sender.startswith("agent:")
+        message.sender.startswith("citizen:") or (from_agent and hold_self)
     ):
         await _on_confirm(city, message, chat, hold_self=hold_self)
         return
@@ -1053,8 +1134,26 @@ async def _advance_alone(
     if taken and not replacing:
         return
     page, pages = _page(world)
-    if page < pages and page < _MAX_PAGE and not _asked(chat, agent, procedure, page + 1):
-        await _say(city, LEDGER, f"world procedure={procedure} page={page + 1}")
+    if page < pages and page < _MAX_PAGE:
+        if not _asked(chat, agent, procedure, page + 1):
+            await _say(city, LEDGER, f"world procedure={procedure} page={page + 1}")
+        return
+    if fixed is None:
+        # Every page of our world is read and nothing fits: try the ring partners.
+        await _go_cross(
+            city,
+            message,
+            chat,
+            key,
+            sent,
+            citizen=citizen,
+            procedure=procedure,
+            priority=priority,
+            number=number,
+            now=now,
+            taken=taken,
+            replacing=replacing,
+        )
 
 
 async def _on_confirm(
@@ -1088,12 +1187,25 @@ async def _on_confirm(
         return
     if not facility or not citizen:
         return
+    offer_id = offer_id or offer.get("offer_id", "")
+    # The facility reads its own offer id; the citizen only knows ours.
+    forward_id = offer_id
+    partner = None if book_here else _partner_slot(chat, agent, slot)
+    if partner is not None:
+        # Cross-ASST: citizen id and prescription leave our ASST only with a cross_asst
+        # consent (rule P2). Without it, ask and share nothing; the consent turn forwards.
+        cross, _declined = _cross_consent(chat, agent, citizen)
+        if not cross:
+            key = message.need_id or message.msg_id
+            await _ask_cross(city, citizen, chat, agent, _sent(key))
+            return
+        consent = cross
+        forward_id = partner.get("partner_offer_id") or offer_id
     if _we(chat, agent, f"slot_id={slot}", to=facility, word="confirm"):
         return
-    offer_id = offer_id or offer.get("offer_id", "")
     parts = [
         "confirm",
-        f"offer_id={offer_id}",
+        f"offer_id={forward_id}",
         f"slot_id={slot}",
         f"citizen={citizen}",
         f"consent_ref={consent}",
@@ -1130,7 +1242,7 @@ async def _partner_cancel(
     city: City, message: Message, chat: list[Message], *, fixed: str | None
 ) -> None:
     fields = fields_of(message.text)
-    offer_id = fields.get("offer_id", "")
+    offer_id = _citizen_offer_id(chat, city.agent_id, message.sender, fields)
     citizen = _citizen(chat)
     # P1: the Ledger refused the commit because the prescription expired. Offering the same
     # number again books an expired prescription, so send the citizen to the GP instead.
@@ -1148,7 +1260,359 @@ async def _partner_cancel(
             key = message.need_id or message.msg_id
             await _ask_renewal(city, citizen, number, _lang(chat), chat, city.agent_id, key)
         return
-    await _advance(city, message, chat, fixed=fixed, replacing=True)
+    # Re-offer only when an offer the citizen holds was withdrawn. A partner's cancel of our
+    # need.request (no slots there) withdraws nothing, so the citizen's offers stand.
+    await _advance(city, message, chat, fixed=fixed, replacing=bool(offer_id))
+
+
+# --- cross-ASST (ring partner) -----------------------------------------------------------------
+
+
+def _request_id(key: str | None) -> str:
+    """Opaque id for our need.request to partners: no need id or citizen id leaves."""
+
+    return "rq-" + hashlib.sha1((key or "case").encode("utf-8")).hexdigest()[:10]
+
+
+def _own_facilities(chat: list[Message], agent: str) -> set[str]:
+    """Our agents: the live five, ourselves, and every facility our own world lists."""
+
+    own = set(_OWN_AGENTS) | {agent}
+    for row in chat:
+        if row.sender != LEDGER or first_word(row.text) != "slots":
+            continue
+        for line in row.text.splitlines():
+            facility = fields_of(line).get("facility", "")
+            if facility.startswith("agent:"):
+                own.add(facility)
+    return own
+
+
+def _partner_segments(text: str) -> list[dict[str, str]]:
+    """Offer lines in an agent's message, one per line or per ``;``."""
+
+    found: list[dict[str, str]] = []
+    for part in re.split(r"[\n;]+", text):
+        kind = words(part)
+        if "slot_id=" not in part or kind & {"cancel", "confirm", "booking.receipt", "hold"}:
+            continue
+        if "offer" in kind or "offer_id=" in part:
+            fields = fields_of(part)
+            if fields.get("slot_id"):
+                found.append(fields)
+    return found
+
+
+def _partner_offers(chat: list[Message], agent: str) -> list[dict[str, str]]:
+    """Slots partner facilities offered in this case, first offer of each slot wins."""
+
+    own = _own_facilities(chat, agent)
+    slots: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for row in chat:
+        if not row.sender.startswith("agent:") or row.sender in own:
+            continue
+        for offer in _partner_segments(row.text):
+            slot_id = offer["slot_id"]
+            if slot_id in seen:
+                continue
+            seen.add(slot_id)
+            facility = offer.get("facility", "")
+            if not facility.startswith("agent:") or facility in own:
+                facility = row.sender
+            at = offer.get("agenda_date") or offer.get("at", "")
+            when = _when(at)
+            day = offer.get("agenda_day") or offer.get("day") or (
+                _WEEKDAYS[when.weekday()] if when else ""
+            )
+            slot = {
+                "slot_id": slot_id,
+                "doctor_id": offer.get("doctor_id", ""),
+                "facility": facility,
+                "procedure": offer.get("procedure", ""),
+                "at": at,
+                "day": day,
+                "partner": row.sender,
+                "partner_offer_id": offer.get("offer_id", ""),
+            }
+            for extra in ("free", "urgent_reserve"):
+                if offer.get(extra):
+                    slot[extra] = offer[extra]
+            slots.append(slot)
+    return slots
+
+
+def _slot_line(slot: dict[str, str], procedure: str) -> str:
+    """A partner slot as a world-style line, so ``fitting`` judges it like ours."""
+
+    fields = {**slot, "procedure": slot.get("procedure") or procedure}
+    names = ("slot_id", "doctor_id", "facility", "procedure", "at", "day", "free", "urgent_reserve")
+    return " ".join(f"{name}={fields[name]}" for name in names if fields.get(name))
+
+
+def _partner_slot(chat: list[Message], agent: str, slot_id: str) -> dict[str, str] | None:
+    for slot in _partner_offers(chat, agent):
+        if slot["slot_id"] == slot_id:
+            return slot
+    return None
+
+
+def _partner_refused(chat: list[Message], agent: str) -> set[str]:
+    """Partner slots a partner cancelled: never offered again."""
+
+    own = _own_facilities(chat, agent)
+    by_offer = {
+        (slot["partner"], slot["partner_offer_id"]): slot["slot_id"]
+        for slot in _partner_offers(chat, agent)
+        if slot["partner_offer_id"]
+    }
+    refused: set[str] = set()
+    for row in chat:
+        if not row.sender.startswith("agent:") or row.sender in own:
+            continue
+        if "cancel" not in words(row.text):
+            continue
+        fields = fields_of(row.text)
+        if fields.get("slot_id"):
+            refused.add(fields["slot_id"])
+        slot = by_offer.get((row.sender, fields.get("offer_id", "")))
+        if slot:
+            refused.add(slot)
+    return refused
+
+
+def _asked_partners(chat: list[Message], agent: str, request: str) -> set[str]:
+    token = f"request_id={request}"
+    return {
+        row.recipient
+        for row in chat
+        if row.sender == agent
+        and first_word(row.text) == "need.request"
+        and token in row.text.split()
+    }
+
+
+def _cross_asked(chat: list[Message], agent: str, citizen: str) -> int:
+    """Index of our latest cross_asst consent request to the citizen, else -1."""
+
+    asked = -1
+    for index, row in enumerate(chat):
+        if row.sender == agent and row.recipient == citizen and "purpose=cross_asst" in row.text.split():
+            asked = index
+    return asked
+
+
+def _cross_consent(chat: list[Message], agent: str, citizen: str) -> tuple[str, bool]:
+    """The citizen's cross_asst consent_ref, and whether they declined our request."""
+
+    for row in chat:
+        if row.sender != citizen:
+            continue
+        fields = fields_of(row.text)
+        if fields.get("consent_ref") and fields.get("purpose") == "cross_asst":
+            return fields["consent_ref"], False
+    asked = _cross_asked(chat, agent, citizen)
+    if asked < 0:
+        return "", False
+    for row in chat[asked + 1 :]:
+        if row.sender != citizen:
+            continue
+        fields = fields_of(row.text)
+        kind = words(row.text)
+        if "confirm" in kind or fields.get("prescription_number"):
+            continue  # a choice or a resend, not an answer to our question
+        ref = fields.get("consent_ref", "")
+        if ref and fields.get("purpose") in (None, "cross_asst"):
+            return ref, False
+        if not ref:
+            # Refusals come in plain words, without the reference we asked for.
+            return "", True
+    return "", False
+
+
+async def _ask_cross(
+    city: City, citizen: str, chat: list[Message], agent: str, marks: _Sent
+) -> None:
+    """Ask the citizen's consent before any of their data goes to another ASST, once."""
+
+    if "cross:consent" in marks.offers or _cross_asked(chat, agent, citizen) >= 0:
+        return
+    sentence = _CROSS_IT if _lang(chat) == "it" else _CROSS_EN
+    if await _say(city, citizen, f"data.request purpose=cross_asst fields=consent_ref\n{sentence}"):
+        marks.offers.add("cross:consent")
+
+
+async def _note_once(
+    city: City, citizen: str, chat: list[Message], agent: str, marks: _Sent, mark: str, text: str
+) -> None:
+    if mark in marks.offers or _exact(chat, agent, text):
+        return
+    if await _say(city, citizen, text):
+        marks.offers.add(mark)
+
+
+def _pending_partner_confirm(chat: list[Message], agent: str, citizen: str) -> Message | None:
+    """The citizen's latest confirm, if it chose a partner slot not yet forwarded."""
+
+    for row in reversed(chat):
+        if row.sender != citizen or "confirm" not in words(row.text):
+            continue
+        fields = fields_of(row.text)
+        offer = _our_offer(chat, agent, fields.get("offer_id", "")) if fields.get("offer_id") else {}
+        slot = fields.get("slot_id") or offer.get("slot_id", "")
+        if not slot or _partner_slot(chat, agent, slot) is None:
+            return None
+        facility = offer.get("facility", "")
+        if facility and _we(chat, agent, f"slot_id={slot}", to=facility, word="confirm"):
+            return None
+        return row
+    return None
+
+
+def _offer_for_slot(chat: list[Message], agent: str, slot_id: str) -> str:
+    found = ""
+    for row in chat:
+        if row.sender != agent:
+            continue
+        for offer in _offers_in(row.text):
+            if offer.get("slot_id") == slot_id and offer.get("offer_id"):
+                found = offer["offer_id"]
+    return found
+
+
+def _citizen_offer_id(
+    chat: list[Message], agent: str, sender: str, fields: dict[str, str]
+) -> str:
+    """The offer id the citizen knows for a facility's cancel (a partner uses its own ids)."""
+
+    raw = fields.get("offer_id", "")
+    if raw and _our_offer(chat, agent, raw):
+        return raw
+    partner = [slot for slot in _partner_offers(chat, agent) if slot["partner"] == sender]
+    slot_id = fields.get("slot_id", "")
+    if not slot_id and raw:
+        slot_id = next((s["slot_id"] for s in partner if s["partner_offer_id"] == raw), "")
+    if slot_id:
+        mapped = _offer_for_slot(chat, agent, slot_id)
+        if mapped:
+            return mapped
+    return "" if partner else raw
+
+
+async def _find_partners(
+    city: City, chat: list[Message], agent: str, procedure: str, key: str
+) -> list[str]:
+    """Up to ``_MAX_PARTNERS`` facilities of other ASSTs that serve ``procedure``."""
+
+    service = _SERVICE.get(procedure, "")
+    try:
+        peers = await city.find(service or f"facility {procedure}")
+    except CapError as error:
+        _LOG.info("care.cross.find_failed %s", error.code)
+        return []
+    own = _own_facilities(chat, agent)
+    found: list[str] = []
+    for peer in peers:
+        peer_id = getattr(peer, "agent_id", "")
+        if not peer_id.startswith("agent:") or peer_id in own or peer_id in found:
+            continue
+        if getattr(peer, "role", "") in ("booking_centre", "gp"):
+            continue
+        caps = tuple(getattr(peer, "capabilities", ()) or ())
+        if service and caps and service not in caps:
+            continue
+        found.append(peer_id)
+    # The Index order is shuffled; a per-case order spreads requests over partners.
+    found.sort(key=lambda peer_id: hashlib.sha1(f"{key}|{peer_id}".encode("utf-8")).hexdigest())
+    return found[:_MAX_PARTNERS]
+
+
+async def _go_cross(
+    city: City,
+    message: Message,
+    chat: list[Message],
+    key: str,
+    sent: _Sent,
+    *,
+    citizen: str,
+    procedure: str,
+    priority: str | None,
+    number: str | None,
+    now: datetime,
+    taken: set[str],
+    replacing: bool,
+) -> None:
+    """Nothing in our ASST fits: ask ring partners, get consent, offer their slots."""
+
+    agent = city.agent_id
+    lang = _lang(chat)
+    marks = _sent(key)
+    none = _NONE_IT if lang == "it" else _NONE_EN
+    cross, declined = _cross_consent(chat, agent, citizen)
+    if declined:
+        note = _DECLINED_IT if lang == "it" else _DECLINED_EN
+        await _note_once(city, citizen, chat, agent, marks, "cross:declined", note)
+        return
+    request = _request_id(key)
+    asked = _asked_partners(chat, agent, request) | {
+        mark.removeprefix("cross:") for mark in marks.offers if mark.startswith("cross:agent:")
+    }
+    if not asked:
+        if "cross:searched" in marks.offers:
+            return
+        marks.offers.add("cross:searched")
+        service = _SERVICE.get(procedure, "")
+        parts = ["need.request"]
+        if service:
+            parts.append(f"service_type={service}")
+        parts.append(f"procedure={procedure}")
+        if priority:
+            parts.append(f"priority={priority}")
+        parts.append(f"request_id={request}")
+        text = " ".join(parts) + " " + _ASK_PARTNER
+        reached = 0
+        for partner in await _find_partners(city, chat, agent, procedure, key):
+            marks.offers.add(f"cross:{partner}")
+            code = await _send(city, partner, text)
+            if code is None:
+                reached += 1
+                _LOG.info("care.cross.asked %s %s", partner, request)
+            else:
+                # Partner down or refusing (4xx): never resend.
+                _LOG.info("care.cross.refused %s %s", partner, code)
+        if not reached:
+            await _note_once(city, citizen, chat, agent, marks, "cross:none", none)
+            return
+        if not cross:
+            await _ask_cross(city, citizen, chat, agent, marks)
+        return
+    if not cross:
+        await _ask_cross(city, citizen, chat, agent, marks)
+        return
+    refused = _partner_refused(chat, agent)
+    lines = [
+        _slot_line(slot, procedure)
+        for slot in _partner_offers(chat, agent)
+        if slot["slot_id"] not in taken and slot["slot_id"] not in refused
+    ]
+    chosen = fitting(
+        lines, now=now, priority=priority, lang=lang, gender=_gender(chat), procedure=procedure
+    )
+    if chosen:
+        sentence = _PARTNER_OFFER_IT if lang == "it" else _PARTNER_OFFER_EN
+        text = _offer_block(_pick(chosen, _days(chat)), number, priority, lang, sentence)
+        if await _say(city, citizen, text):
+            _LOG.info("care.cross.offered %s", len(_offers_in(text)))
+            for offer in _offers_in(text):
+                sent.offers.add(offer["slot_id"])
+                if replacing:
+                    sent.again.add(offer["slot_id"])
+        return
+    # Nothing (more) fits. Once every partner answered, or the citizen writes again, say so.
+    answered = {row.sender for row in chat if row.sender in asked}
+    resend = message.sender == citizen and bool(fields_of(message.text).get("prescription_number"))
+    if answered >= asked or resend:
+        await _note_once(city, citizen, chat, agent, marks, "cross:none", none)
 
 
 # --- facility ----------------------------------------------------------------------------------
