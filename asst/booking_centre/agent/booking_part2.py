@@ -188,8 +188,10 @@ _PHRASES: dict[str, tuple[str, str]] = {
         "exactly as your GP wrote it?",
     ),
     "checking": (
-        "Sto verificando la ricetta e i posti liberi: le mando le proposte appena pronte.",
-        "I am checking your referral and the free slots: I will send you the options shortly.",
+        "Grazie, ho ricevuto la sua richiesta e me ne occupo subito: sto verificando la ricetta "
+        "e i posti liberi, le mando le proposte tra pochi istanti.",
+        "Thank you, I have your request and I am on it: I am checking your referral and the free "
+        "slots, you will have the options in a moment.",
     ),
     "offers_open": (
         "Le proposte che le ho inviato sono ancora valide: mi scriva l'offer_id che preferisce, "

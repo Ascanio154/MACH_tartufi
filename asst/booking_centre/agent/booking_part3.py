@@ -709,7 +709,7 @@ async def _forward_receipt(city: City, message: Message, chat: list[Message]) ->
     citizen = _citizen(chat)
     if not booking_id or not ledger_ref or not citizen:
         return
-    _PENDING.pop(_who(chat, citizen), None)
+    picked = _PENDING.pop(_who(chat, citizen), None)
     _BOOKED.add(_who(chat, citizen))
     token = f"booking_id={booking_id}"
     # Journey 000098 got the same receipt twice: our own sent row is not always found in the
@@ -718,10 +718,38 @@ async def _forward_receipt(city: City, message: Message, chat: list[Message]) ->
         return
     _RECEIPTS.add(booking_id)
     sentence = _phrase("receipt", _lang(chat))
+    when = _visit_when(_find_offer(chat, city.agent_id, picked) if picked else {}, _lang(chat))
+    if when:
+        sentence = f"{sentence} {when}"
     if not await _say(
         city, citizen, f"booking.receipt booking_id={booking_id} ledger_ref={ledger_ref} {sentence}"
     ):
         _RECEIPTS.discard(booking_id)
+
+
+_DAY_NAMES = {"mon": ("lunedì", "Monday"), "tue": ("martedì", "Tuesday"),
+              "wed": ("mercoledì", "Wednesday"), "thu": ("giovedì", "Thursday"),
+              "fri": ("venerdì", "Friday")}
+
+
+def _visit_when(offer: dict[str, str], lang: str) -> str:
+    """Proactive tail of the receipt: when the visit is, when to register, how to move it."""
+
+    at = offer.get("agenda_date") or offer.get("at", "")
+    if len(at) < 16 or not at[11:13].isdigit():
+        return ""
+    english = lang == "en"
+    day = _DAY_KEYS.get((offer.get("agenda_day") or offer.get("day", ""))[:3].lower(), "")
+    name = _DAY_NAMES.get(day, ("", ""))[1 if english else 0]
+    date, hour = f"{at[8:10]}/{at[5:7]}", at[11:16]
+    window = "08:00-13:00" if int(at[11:13]) < 13 else "13:00-18:00"
+    if english:
+        return (f"Your visit is on {name} {date} at {hour}; you can register your arrival "
+                f"between {window}. If you cannot come, write to me beforehand and I will move "
+                "it to another date, so the slot goes to someone else.").replace("on  ", "on ")
+    return (f"La visita è {name} {date} alle {hour}; può registrare l'arrivo tra le "
+            f"{window}. Se non può venire, me lo scriva prima e la sposto io su un'altra data, "
+            "così il posto passa a un altro cittadino.").replace("è  ", "è ")
 
 
 _RECEIPTS: set[str] = set()

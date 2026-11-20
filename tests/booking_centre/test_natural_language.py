@@ -484,6 +484,17 @@ class LogReport2343(_Fresh):
         self.assertIn("accessibilità", sent)
         self.assertEqual(understood(msg(AGENT, sent, HOSP)).type, "confirm")
 
+    async def test_receipt_says_when_and_how_to_move_it(self) -> None:
+        chat = booking_chat(slots=DEFAULT_SLOTS[:5])
+        city = PartnerCity(chat)
+        await desk(city, chat[0])
+        await desk(city, msg(CIT, "confirm offer_id=of-S-3 consent_ref=cons-1", AGENT))
+        await desk(city, msg(HOSP, "booking.receipt booking_id=B-9 ledger_ref=L-9", AGENT))
+        receipt = [t for t in to_citizen(city) if t.startswith("booking.receipt")][-1]
+        self.assertIn("martedì 24/11 alle 09:00", receipt)
+        self.assertIn("08:00-13:00", receipt)
+        self.assertEqual(understood(msg(AGENT, receipt, CIT)).type, "booking.receipt")
+
 
 if __name__ == "__main__":
     unittest.main()
