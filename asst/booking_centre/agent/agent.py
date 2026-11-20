@@ -13,7 +13,7 @@ import logging
 import os
 import re
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -103,6 +103,8 @@ _PARTNER_CAPABILITY = {
 _MAX_PARTNERS = 3
 _PARTNER_ASK_IT = "Nella nostra ASST non ci sono posti adatti: sto chiedendo alle ASST vicine."
 _PARTNER_ASK_EN = "No suitable slot in our ASST: I am asking the nearby ASSTs."
+_PARTNER_LEAD_IT = "Questi posti sono in un'altra ASST della rete."
+_PARTNER_LEAD_EN = "These appointments are at a partner ASST."
 # Rule P1: a prescription is valid for 2 agenda days after it is issued.
 _RX_VALID_DAYS = 2
 _RENEW_IT = (
@@ -1002,6 +1004,10 @@ async def _desk(
     if "cancel" in kind and message.sender.startswith("agent:"):
         await _partner_cancel(city, message, chat, fixed=fixed)
         return
+    if "offer" in kind and message.sender.startswith("agent:"):
+        key = message.need_id or message.msg_id
+        await _locked(key, lambda: _on_partner_offer(city, message, chat))
+        return
     if message.sender == LEDGER or message.sender.startswith("citizen:"):
         await _advance(city, message, chat, fixed=fixed, replacing=False)
 
@@ -1016,19 +1022,135 @@ async def _advance(
     avoid: str | None = None,
 ) -> None:
     key = message.need_id or message.msg_id
+    await _locked(
+        key,
+        lambda: _advance_alone(
+            city, message, chat, key, fixed=fixed, replacing=replacing, avoid=avoid
+        ),
+    )
+
+
+async def _locked(key: str, work: Callable[[], Awaitable[None]]) -> None:
+    """Run ``work`` alone for this need: turns of one need run at the same time."""
+
     gate = _GATES.get(key)
     if gate is None:
         gate = _GATES[key] = _Gate()
     gate.turns += 1
     try:
         async with gate.lock:
-            await _advance_alone(
-                city, message, chat, key, fixed=fixed, replacing=replacing, avoid=avoid
-            )
+            await work()
     finally:
         gate.turns -= 1
         if gate.turns == 0 and _GATES.get(key) is gate:
             del _GATES[key]
+
+
+def _partner_offers_in(text: str, default_facility: str) -> list[dict[str, str]]:
+    """Every offer in a partner's message, one per line or several on one line."""
+
+    found: list[dict[str, str]] = []
+    current: dict[str, str] | None = None
+    for token in text.replace(",", " ").split():
+        key, eq, value = token.strip(";:!?()\"'").partition("=")
+        value = value.strip(".,;:!?")
+        if not eq or not key or not value:
+            continue
+        if key == "offer_id":
+            if current is not None:
+                found.append(current)
+            current = {"offer_id": value}
+        elif current is not None and key not in current:
+            current[key] = value
+    if current is not None:
+        found.append(current)
+    for offer in found:
+        offer.setdefault("facility", default_facility)
+    return [offer for offer in found if offer.get("slot_id")]
+
+
+def _partner_line(
+    slot: dict[str, str], offer_id: str, number: str | None, priority: str | None
+) -> str:
+    parts = [
+        "offer",
+        f"offer_id={offer_id}",
+        f"slot_id={slot['slot_id']}",
+        f"doctor_id={slot['doctor_id']}",
+        f"facility={slot['facility']}",
+        f"procedure={slot['procedure']}",
+        f"agenda_date={slot['at']}",
+        f"agenda_day={slot['day']}",
+        f"expiry={slot['at']}",
+    ]
+    if priority:
+        parts.append(f"priority={priority}")
+    if number:
+        parts.append(f"prescription_number={number}")
+    return " ".join(parts)
+
+
+async def _on_partner_offer(city: City, message: Message, chat: list[Message]) -> None:
+    """A partner facility's slots: filter them for this citizen, offer them in ONE message."""
+
+    agent = city.agent_id
+    citizen = _citizen(chat)
+    ours = _own_facilities(chat)
+    number = _number(chat)
+    if citizen is None or not number or message.sender in ours:
+        return
+    row = _rx_line(chat, agent, number)
+    reply = {} if row is None else fields_of(row.text)
+    procedure, priority = reply.get("procedure"), reply.get("priority")
+    agenda = _ledger(chat, "agenda")
+    now = _when("" if agenda is None else agenda.get("agenda_now", ""))
+    if not procedure or now is None:
+        return
+    key = message.need_id or message.msg_id
+    sent = _sent(f"{key}|{number}")
+    if "partner-offered" in sent.offers:
+        return
+    lines: list[str] = []
+    offer_ids: dict[str, str] = {}
+    for offer in _partner_offers_in(message.text, message.sender):
+        if offer["facility"] in ours:
+            continue
+        raw_day = (offer.get("agenda_day") or offer.get("day", "")).lower()
+        day = _DAY_KEYS.get(raw_day[:3], raw_day)
+        at = offer.get("agenda_date") or offer.get("at", "")
+        lines.append(
+            f"slot_id={offer['slot_id']} doctor_id={offer.get('doctor_id', '')} "
+            f"facility={offer['facility']} procedure={offer.get('procedure', procedure)} "
+            f"at={at} day={day}"
+        )
+        offer_ids[offer["slot_id"]] = offer["offer_id"]
+    taken = _offered(chat, agent, number) | sent.offers
+    fits = [
+        slot
+        for slot in fitting(
+            lines,
+            now=now,
+            priority=priority,
+            lang=_lang(chat),
+            gender=_gender(chat),
+            procedure=procedure,
+        )
+        if slot["slot_id"] not in taken
+    ]
+    if not fits:
+        return
+    lead = _PARTNER_LEAD_IT if _lang(chat) == "it" else _PARTNER_LEAD_EN
+    rows: list[str] = []
+    for slot in _pick(fits, _days(chat)):
+        line = _partner_line(slot, offer_ids[slot["slot_id"]], number, priority)
+        if len("\n".join([*rows, line, lead])) > _MAX_TEXT:
+            break
+        rows.append(line)
+    text = "\n".join([*rows, lead])
+    if await _say(city, citizen, text):
+        sent.offers.add("partner-offered")
+        for offer in _offers_in(text):
+            sent.offers.add(offer["slot_id"])
 
 
 async def _advance_alone(

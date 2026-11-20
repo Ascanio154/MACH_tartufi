@@ -142,5 +142,87 @@ class AskPartners(_Fresh):
         self.assertEqual(len(notices), 1)
 
 
+def poffer(oid: str, sid: str, doc: str, at: str, day: str, *, proc: str = "VIS-FIS",
+           facility: str = PX1) -> str:
+    return (
+        f"offer offer_id={oid} slot_id={sid} doctor_id=ASST-2-{doc} facility={facility} "
+        f"procedure={proc} agenda_date={at} agenda_day={day} request_id=x-{NEED}"
+    )
+
+
+VALID_A = poffer("p-A", "A", "h1", "2026-11-24T09:00:00+01:00", "tue")
+VALID_B = poffer("p-B", "B", "h2", "2026-11-25T10:30:00+01:00", "wed")
+VALID_C = poffer("p-C", "C", "h1", "2026-11-24T14:30:00+01:00", "tue")
+
+
+def offer_messages(city: PartnerCity) -> list[str]:
+    return [text for text in city.sent_to(CIT) if "offer offer_id=" in text]
+
+
+def offer_rows(text: str) -> list[str]:
+    return [line for line in text.splitlines() if line.startswith("offer ")]
+
+
+async def asked_city(peer_list: list[Peer] | None = None) -> PartnerCity:
+    """A case where our ASST had nothing and the partners were asked."""
+
+    city = PartnerCity(booking_chat(slots=PAST_ONLY), peers=peer_list or peers())
+    await advance(city)
+    return city
+
+
+async def partner_says(city: PartnerCity, sender: str, text: str) -> Message:
+    message = msg(sender, text, AGENT)
+    city.chat.append(message)
+    city.inbound = message
+    await bc._desk(city, message, city.chat, hold_self=False, fixed=None)
+    return message
+
+
+class PartnerOffers(_Fresh):
+    async def test_partner_offer_forwarded(self) -> None:
+        city = await asked_city()
+        await partner_says(city, PX1, "\n".join([VALID_A, VALID_B, VALID_C]))
+        sent = offer_messages(city)
+        self.assertEqual(len(sent), 1)
+        rows = offer_rows(sent[0])
+        self.assertEqual(len(rows), 3)
+        for row in rows:
+            self.assertIn(f"facility={PX1}", row.split())
+            self.assertIn(f"prescription_number={RX}", row.split())
+        ids = {token for row in rows for token in row.split() if token.startswith("offer_id=")}
+        self.assertEqual(ids, {"offer_id=p-A", "offer_id=p-B", "offer_id=p-C"})
+
+    async def test_partner_offers_filtered(self) -> None:
+        city = await asked_city()
+        past = poffer("p-P", "P", "h1", "2026-11-20T09:00:00+01:00", "fri")
+        other = poffer("p-K", "K", "h1", "2026-11-24T10:00:00+01:00", "tue", proc="VIS-CARD")
+        unknown = poffer("p-Z", "Z", "zz", "2026-11-24T11:00:00+01:00", "tue")
+        await partner_says(city, PX1, "\n".join([past, other, unknown, VALID_A]))
+        sent = offer_messages(city)
+        self.assertEqual(len(sent), 1)
+        rows = offer_rows(sent[0])
+        self.assertEqual(len(rows), 1)
+        self.assertIn("slot_id=A", rows[0].split())
+
+    async def test_partner_offers_one_line(self) -> None:
+        city = await asked_city()
+        await partner_says(city, PX1, VALID_A + " " + VALID_B.removeprefix("offer "))
+        rows = offer_rows(offer_messages(city)[0])
+        self.assertEqual(len(rows), 2)
+
+    async def test_second_partner_offer_not_resent(self) -> None:
+        city = await asked_city()
+        await partner_says(city, PX1, VALID_A)
+        await partner_says(city, PX2, poffer("q-D", "D", "h1", "2026-11-24T10:30:00+01:00",
+                                             "tue", facility=PX2))
+        self.assertEqual(len(offer_messages(city)), 1)
+
+    async def test_partner_offer_nothing_fits(self) -> None:
+        city = await asked_city()
+        await partner_says(city, PX1, poffer("p-P", "P", "h1", "2026-11-20T09:00:00+01:00", "fri"))
+        self.assertEqual(offer_messages(city), [])
+
+
 if __name__ == "__main__":
     unittest.main()
