@@ -720,10 +720,12 @@ async def _partner_peers(
         found = await city.find(capability)
     except CapError:
         return []
+    # find(capability) already filters by capability; drop only a peer that lists others.
     keep = [
         peer
         for peer in found
-        if peer.agent_id not in ours and capability in tuple(peer.capabilities or ())
+        if peer.agent_id not in ours
+        and (not peer.capabilities or capability in tuple(peer.capabilities))
     ]
     keep.sort(key=lambda peer: district is None or peer.district != district)
     return keep

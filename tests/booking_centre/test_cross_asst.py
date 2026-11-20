@@ -131,6 +131,14 @@ class AskPartners(_Fresh):
         await advance(city)
         self.assertEqual(len(requests(city)), 3)
 
+    async def test_peers_without_capabilities_still_asked(self) -> None:
+        # find(capability) already filters by capability; a peer card may come back without them.
+        bare = [Peer(agent_id=PX1, district=3, role="facility"),
+                Peer(agent_id=HOSP, district=7, role="facility")]
+        city = PartnerCity(booking_chat(slots=PAST_ONLY), peers=bare)
+        await advance(city)
+        self.assertEqual([to for to, _ in requests(city)], [PX1])
+
     async def test_citizen_told_once(self) -> None:
         city = PartnerCity(booking_chat(slots=PAST_ONLY), peers=peers())
         await advance(city)
