@@ -900,7 +900,7 @@ def _facility_turn(message: Message) -> bool:
     kind = words(message.text)
     if message.sender == LEDGER and head in {"held", "committed", "checked_in", "reported"}:
         return True
-    if message.sender == LEDGER and head == "refused" and "hold" in kind:
+    if message.sender == LEDGER and head == "refused" and bool({"hold", "commit"} & kind):
         return True
     if "checkin" in kind and message.sender.startswith("citizen:"):
         return True
@@ -930,7 +930,7 @@ async def _facility(
         await _on_held(city, message, chat)
     elif message.sender == LEDGER and head == "committed":
         await _on_committed(city, message, chat)
-    elif message.sender == LEDGER and head == "refused" and "hold" in kind:
+    elif message.sender == LEDGER and head == "refused" and bool({"hold", "commit"} & kind):
         await _on_refused(city, message, chat, hold_self=hold_self)
     elif message.sender == LEDGER and head == "checked_in":
         await _on_checked_in(city, message, chat, reports=reports)
@@ -1082,6 +1082,8 @@ async def _on_refused(
     city: City, message: Message, chat: list[Message], *, hold_self: bool
 ) -> None:
     agent = city.agent_id
+    fields = fields_of(message.text)
+    reason = fields.get("reason") or fields.get("code") or "facility_cancelled"
     slot = ""
     for row in chat:
         if row.sender == agent and row.recipient == LEDGER and "hold" in words(row.text):
@@ -1098,7 +1100,7 @@ async def _on_refused(
         and offer_id
         and not _we(chat, agent, f"offer_id={offer_id}", to=target, word="cancel")
     ):
-        await _say(city, target, f"cancel offer_id={offer_id} reason=facility_cancelled")
+        await _say(city, target, f"cancel offer_id={offer_id} reason={reason}")
     if hold_self:
         await _advance(city, message, chat, fixed="CONS-GIN", replacing=True)
 
