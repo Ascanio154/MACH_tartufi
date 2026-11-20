@@ -514,7 +514,7 @@ async def _on_confirm(
             # Impostor guard: a slot we never offered this agent, from an unknown agent.
             _LOG.info("care.confirm.ignored sender=%s slot=%s", message.sender, slot)
             await _say(city, message.sender, f"cancel offer_id={offer_id or 'of-' + slot} "
-                       "reason=unknown_offer")
+                       "reason=hold_refused")
             return
         _CONFIRMED_BY[message.need_id or message.msg_id] = message.sender
         if facility and citizen:
@@ -564,7 +564,7 @@ async def _on_confirm(
 async def _agent_confirm_ok(city: City, chat: list[Message], sender: str, slot: str) -> bool:
     """An agent's confirm: ours, a slot we offered it, or a booking centre on the Index."""
 
-    if sender in _TEAM_AGENTS or (sender, slot) in _OFFERED_TO:
+    if sender in _TEAM_AGENTS or sender in _TRUSTED_RING or (sender, slot) in _OFFERED_TO:
         return True
     if _we(chat, city.agent_id, f"slot_id={slot}", to=sender, word="offer"):
         return True
@@ -731,9 +731,10 @@ async def _forward_receipt(city: City, message: Message, chat: list[Message]) ->
         # The booking was another ASST's: the receipt goes back to its booking centre.
         if booking_id not in _RECEIPTS:
             _RECEIPTS.add(booking_id)
-            if not await _say(
-                city, partner, f"booking.receipt booking_id={booking_id} ledger_ref={ledger_ref}"
-            ):
+            extra = " ".join(f"{name}={fields[name]}" for name in ("offer_id", "slot_id")
+                             if fields.get(name))
+            if not await _say(city, partner, f"booking.receipt booking_id={booking_id} "
+                              f"ledger_ref={ledger_ref} {extra}".rstrip()):
                 _RECEIPTS.discard(booking_id)
         return
     citizen = _citizen(chat)

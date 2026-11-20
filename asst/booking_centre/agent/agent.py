@@ -32,6 +32,7 @@ from city_sdk.city import (
 
 ROLES = ("booking_centre", "gp", "hospital", "specialist_care", "family_counseling")
 _MAX_PAGE = 8
+_PARTNER_ACK = "Ricevuto, verifico la disponibilità e vi rispondo in un solo messaggio."
 _ACK_AFTER = 4.0  # seconds before a citizen hears "I am on it" while we read the Ledger
 # Four agenda hours is about half a minute of real time at 480x, so a slot is still
 # ahead when the citizen decides. One hour was already past by then.
@@ -343,6 +344,37 @@ def fields_of(text: str) -> dict[str, str]:
 # Citizens write in plain Italian or English, in any tone. Every reader below starts from the
 # ``key=value`` tokens (they always win) and only fills a field the tokens leave out. Pure regex
 # and word lists: no model call, so the 10 s fast reply stays safe.
+
+# MACH-1 (ring standard, Discord 21/11): ids each team published for its agents. Self-declared,
+# so they only rank partners and vouch for confirms; an unlisted agent is not dropped.
+_TRUSTED_RING = frozenset({
+    "agent:qtjne8symjas", "agent:tmt0bcv0st1f", "agent:n9bf9y6670hp",  # Lorenteggio
+    "agent:cdc7x6m21nj6", "agent:h6r1v45esk77", "agent:hnpe58epeyh1",  # Giambellino
+    "agent:gdrf9b9kxxss", "agent:nanpr5mgm2py", "agent:pky3vqyqbepa",  # Lambrate
+    "agent:psxp8bh1feaa", "agent:gpr1zqe343gb", "agent:zand0f57ec1j",  # Nord
+    "agent:ez8cb7j167p2", "agent:bb01ggxymm05", "agent:sh35cbsy287d",  # Bicocca
+    "agent:vgtmj5nqfkxj", "agent:gxq3vzgt3h5t", "agent:tty8erdj6t41",  # Bovisa
+    "agent:etpwrfmfa8hm",  # Isola (specialist)
+})
+# Rare language of h3 -> that ASST's hospital (published ids only): asked first.
+_LANG_HOSPITAL = {
+    "ka": "agent:h6r1v45esk77",  # Giambellino
+    "ja": "agent:nanpr5mgm2py",  # Lambrate
+    "ur": "agent:gpr1zqe343gb",  # Nord
+    "ti": "agent:bb01ggxymm05",  # Bicocca
+}
+# MACH-1 cancel reasons between agents; anything else is sent as hold_refused.
+_RING_REASONS = frozenset({"no_availability", "facility_unavailable", "rule_p2_no_consent",
+                           "hold_refused", "past"})
+
+
+def _ring_reason(reason: str) -> str:
+    if reason in _RING_REASONS:
+        return reason
+    if "CONSENT" in reason.upper():
+        return "rule_p2_no_consent"
+    return "hold_refused"
+
 
 _TEAM_AGENTS = frozenset(
     {

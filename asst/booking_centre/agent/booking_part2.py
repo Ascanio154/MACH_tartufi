@@ -23,6 +23,15 @@ async def _desk(
 ) -> None:
     if message.sender == city.agent_id:
         return
+    if fixed is None and message.sender.startswith("agent:") and _partner_request(message):
+        # MACH-1: first answer to a partner within 10 s; a plain "received" if the Ledger is slow.
+        turn = asyncio.ensure_future(
+            _desk_turn(city, message, chat, hold_self=hold_self, fixed=fixed))
+        done, _pending = await asyncio.wait({turn}, timeout=_ACK_AFTER)
+        if not done:
+            await _say(city, message.sender, _PARTNER_ACK)
+        await turn
+        return
     if fixed is not None or not message.sender.startswith("citizen:"):
         await _desk_turn(city, message, chat, hold_self=hold_self, fixed=fixed)
         return
@@ -613,7 +622,7 @@ async def _answer_partner(city: City, message: Message, chat: list[Message]) -> 
     agenda = _ledger(chat, "agenda")
     now = _when("" if agenda is None else agenda.get("agenda_now", ""))
     if world is None or now is None:
-        await _say(city, partner, f"cancel {token} reason=ledger_unavailable")
+        await _say(city, partner, f"cancel {token} reason=facility_unavailable")
         return
     slots = _desk_partner_slots(
         [line for line in world.splitlines() if "slot_id=" in line],

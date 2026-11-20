@@ -290,7 +290,7 @@ def _district(chat: list[Message]) -> int | None:
 
 
 async def _partner_peers(
-    city: City, procedure: str, ours: set[str], district: int | None
+    city: City, procedure: str, ours: set[str], district: int | None, lang: str = ""
 ) -> list[Peer]:
     """Partner facilities for ``procedure`` from the Index: never ours, the citizen's district first."""
 
@@ -310,6 +310,10 @@ async def _partner_peers(
         and (not peer.capabilities or capability in tuple(peer.capabilities))
     ]
     keep.sort(key=lambda peer: district is None or peer.district != district)
+    # MACH-1: published ring partners first, and for a rare language the ASST whose h3 speaks it.
+    keep.sort(key=lambda peer: peer.agent_id not in _TRUSTED_RING)
+    if lang in _LANG_HOSPITAL:
+        keep.sort(key=lambda peer: peer.agent_id != _LANG_HOSPITAL[lang])
     return keep
 
 
@@ -345,7 +349,7 @@ async def _ask_partners(
     parts.append(token)
     sent_now = False
     limit = _MAX_PARTNERS if _lang(chat) in {"it", "en"} else _MAX_PARTNERS_RARE
-    for peer in (await _partner_peers(city, procedure, ours, _district(chat)))[:limit]:
+    for peer in (await _partner_peers(city, procedure, ours, _district(chat), _lang(chat)))[:limit]:
         if await _send(city, peer.agent_id, " ".join(parts)) is None:
             entry.offers.add(f"partner:{peer.agent_id}")
             sent_now = True

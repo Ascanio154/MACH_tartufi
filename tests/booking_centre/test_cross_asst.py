@@ -462,7 +462,20 @@ class Level4Live(_Fresh):
         await partner_says(city, "agent:impostor",
                            f"confirm offer_id=of-S-3 slot_id=S-3 citizen={CIT} consent_ref=c-1")
         self.assertEqual(confirms_to(city, HOSP), [])
-        self.assertTrue(any("reason=unknown_offer" in t for t in city.sent_to("agent:impostor")))
+        self.assertTrue(any("reason=hold_refused" in t for t in city.sent_to("agent:impostor")))
+
+    async def test_rare_language_asks_its_asst_first(self) -> None:
+        georgian = "agent:h6r1v45esk77"  # Giambellino's hospital (MACH-1 table)
+        many = peers() + [Peer(agent_id=georgian, role="facility",
+                               capabilities=("hospital.physiatry",))]
+        city = PartnerCity(lang_chat("ka", PAST_ONLY), peers=many)
+        await advance(city)
+        self.assertEqual(requests(city)[0][0], georgian)
+
+    async def test_ring_reasons_only(self) -> None:
+        self.assertEqual(bc._ring_reason("facility_cancelled"), "hold_refused")
+        self.assertEqual(bc._ring_reason("CONSENT_MISSING"), "rule_p2_no_consent")
+        self.assertEqual(bc._ring_reason("no_availability"), "no_availability")
 
 
 if __name__ == "__main__":

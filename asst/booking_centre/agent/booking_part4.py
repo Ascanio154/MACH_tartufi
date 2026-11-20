@@ -14,7 +14,7 @@ async def _partner_cancel(
     partner = _CONFIRMED_BY.get(key, "")
     if partner and message.sender != partner and offer_id:
         # Our facility refused a slot another ASST confirmed through us: tell that ASST.
-        reason = fields.get("reason", "facility_cancelled")
+        reason = _ring_reason(fields.get("reason", "hold_refused"))
         await _say(city, partner, f"cancel offer_id={offer_id} reason={reason}")
         return
     if citizen and offer_id and _PENDING.get(_who(chat, citizen)) == offer_id:
