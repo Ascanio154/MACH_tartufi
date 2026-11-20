@@ -1,7 +1,7 @@
 agent_id: agent:q18es2d82f8r
 team: team:tartufi-pazzi
 name: specialist
-version: 1.0.2
+version: 1.0.4
 cap_versions:
   - "1.0"
 profiles:
