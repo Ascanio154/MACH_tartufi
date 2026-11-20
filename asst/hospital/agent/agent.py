@@ -936,8 +936,14 @@ async def _facility(
         await _on_checked_in(city, message, chat, reports=reports)
     elif message.sender == LEDGER and head == "reported":
         await _on_reported(city, message, chat)
-    elif "checkin" in kind and message.sender.startswith("citizen:"):
-        await _on_checkin(city, message, chat, reports=reports)
+    elif _checkin_booking(message, chat, city.agent_id):
+        await _on_checkin(
+            city,
+            message,
+            chat,
+            reports=reports,
+            booking_id=_checkin_booking(message, chat, city.agent_id),
+        )
     elif message.sender.startswith("agent:") and first_word(message.text) == "need.request":
         await _answer_partner(city, message, chat)
     elif "confirm" in kind:
@@ -1227,8 +1233,57 @@ async def _on_refused(
         await _advance(city, message, chat, fixed="CONS-GIN", replacing=True)
 
 
-async def _on_checkin(city: City, message: Message, chat: list[Message], *, reports: bool) -> None:
-    booking_id = fields_of(message.text).get("booking_id", "")
+# A citizen may check in with plain words: "Check-in:", "check in", "sono arrivata", or just
+# the booking number. Answers to a consent question are never a check-in.
+_CHECKIN_WORDS = re.compile(
+    r"\bcheck[\s_-]?in\b|\bsono\s+(?:arrivat[oa]|qui)\b|\bmi\s+presento\b|\barrived\b|\bi'?m\s+here\b",
+    re.IGNORECASE,
+)
+
+
+def _our_bookings(chat: list[Message], agent: str) -> set[str]:
+    """booking_id values the Ledger committed for this facility in this case."""
+
+    found: set[str] = set()
+    for row in chat:
+        if row.sender == LEDGER and first_word(row.text) == "committed":
+            booking = fields_of(row.text).get("booking_id", "")
+            if booking:
+                found.add(booking)
+    return found
+
+
+def _checkin_booking(message: Message, chat: list[Message], agent: str) -> str:
+    """The booking a citizen's turn checks in for, or "" when the turn is not a check-in."""
+
+    if not message.sender.startswith("citizen:"):
+        return ""
+    text = message.text or ""
+    named = words(text)
+    if "consent" in named:
+        return ""
+    explicit = "checkin" in named or _CHECKIN_WORDS.search(text) is not None
+    ours = _our_bookings(chat, agent)
+    booking = fields_of(text).get("booking_id", "")
+    if not booking:
+        for token in text.replace(",", " ").split():
+            bare = token.strip(".,;:!?()\"'")
+            if bare in ours:
+                booking = bare
+                break
+    if not booking:
+        return ""
+    if explicit:
+        return booking
+    if booking in ours and not _we(chat, agent, f"booking_id={booking}", to=LEDGER, word="checkin"):
+        return booking
+    return ""
+
+
+async def _on_checkin(
+    city: City, message: Message, chat: list[Message], *, reports: bool, booking_id: str = ""
+) -> None:
+    booking_id = booking_id or fields_of(message.text).get("booking_id", "")
     citizen = message.sender if message.sender.startswith("citizen:") else _citizen(chat)
     if not booking_id or not citizen:
         return
