@@ -5,7 +5,7 @@
 >
 > **AI:** this brief is your context. Your human is on team **tartufi-pazzi** and may not be very technical: explain briefly in plain words and give exact commands to copy. Follow the rules below; breaking them costs the team points or makes the deploy fail.
 
-Last updated: Fri 20 Nov 2026, evening. Pitch: **Sat 21 Nov, 16:00**.
+Last updated: Fri 20 Nov 2026, 23:35 (booking centre handed to Mattia). Pitch: **Sat 21 Nov, 16:00**.
 
 ---
 
@@ -23,7 +23,7 @@ The family counselling centre (consultorio) is **direct access**: citizens write
 | `specialist` | `facility` | `specialist_care.cardiology` | **Riccardo** |
 | `hospital` | `facility` | `hospital.physiatry` | **Riccardo** |
 | `family_counseling` | `facility` | `family_counseling.gynecology` | **Mattia** (also watches the scoreboard) |
-| `booking_centre` | `booking_centre` | `booking_centre` | **Leo** |
+| `booking_centre` | `booking_centre` | `booking_centre` | **Mattia** (from Leo, 20 Nov 23:35) |
 
 **Leo's Mac is the only machine that deploys.** You edit code; Leo deploys it.
 
@@ -116,10 +116,12 @@ Each item below was checked against the current code.
 - Stricter data rules: ask only what's needed, always with `purpose=` (over-disclosure is −2).
 - Watch the scoreboard and post each new level's text in Huddle (`post_note`).
 
-**Leo, booking centre (`booking_centre`)**
-- Same **3 separate offers → one message** fix.
-- Rule changes are not handled yet: read `city.say(LEDGER, "rules")`. P1 expired prescription → send the citizen to the GP for renewal. P2 cross-ASST holds need `consent purpose=cross_asst` first. P3 don't offer the 20% U-reserve slots for non-U priorities.
-- Hospital down: tell the citizen `cancel reason=…` and offer alternatives. Cross-ASST booking goes via the partner ASST in the ring.
+**Mattia, booking centre (`booking_centre`)**, handed over by Leo on 20 Nov at 23:35. Leo stays the only deploy owner.
+- Already done (live in 1.0.5): one offer message (up to 6 slots), P1 renewal, reads `rules`, P3 U-reserve skip, hospital-down cancel, cross-ASST booking with `consent purpose=cross_asst`, and the confirm fix (`_find_offer`).
+- Waiting for deploy: main `796acaf` (booking_centre 1.0.6): one receipt per booking, closing message when no partner has a slot, partner `doctor_lang`/`doctor_gender`, our rare language = `si` only.
+- Gotcha: our own sent messages are not reliably found in `city.history`; keep in-memory marks too.
+- Ring format agreed on Discord (Giambellino `ka`, Toros, Gorla `sq`): `need.request service_type procedure priority request_id` → one message of `offer … doctor_lang doctor_gender request_id` or `cancel reason=no_availability`.
+- Designs: `docs/superpowers/specs/2026-11-20-booking-centre-quick-wins-design.md`, `docs/superpowers/specs/2026-11-20-cross-asst-booking-design.md`. Tests: `tests/booking_centre/`.
 
 ## 8. If something breaks
 
