@@ -138,6 +138,12 @@ async def _on_partner_offer(city: City, message: Message, chat: list[Message]) -
             f"at={at} day={day}"
         )
         langs = offer.get("doctor_lang", "")
+        if langs and not _claim_plausible(offer.get("doctor_id", ""), langs,
+                                          offer.get("doctor_gender", "")):
+            # Every ASST has the same doctors; only h3's rare language differs. A claim that
+            # breaks the table is a false offer attribute (-2 if we pass it on): drop the slot.
+            _LOG.info("care.partner.offer.implausible %s", offer.get("slot_id", ""))
+            continue
         if langs:
             speaks = lang in {part.strip().lower() for part in langs.split("/")}
             matches = not gender or offer.get("doctor_gender", gender) == gender
@@ -445,7 +451,7 @@ def _relaxed_block(chat: list[Message], agent: str) -> str:
     fits = [slot for slot in fits if slot.get("slot_id") not in taken]
     if not fits:
         return ""
-    lead = _RELAXED_EN if lang == "en" else _RELAXED_IT
+    lead = _RELAXED_IT if lang == "it" else _RELAXED_EN
     return _offer_block(_pick(fits, _days(chat)), number, priority, lang, lead=lead)
 
 
@@ -676,6 +682,7 @@ async def _forward_confirm(
     parts.append(note)
     code = await _send(city, facility, " ".join(parts))
     if code is None:
+        _CONFIRMED_TO.add((message.need_id or message.msg_id, facility))
         if citizen.startswith("citizen:") and not message.sender.startswith("agent:"):
             _PENDING[_who(chat, citizen)] = offer_id
         return
@@ -709,6 +716,11 @@ async def _forward_receipt(city: City, message: Message, chat: list[Message]) ->
     citizen = _citizen(chat)
     if not booking_id or not ledger_ref or not citizen:
         return
+    if not _receipt_sender_ok(chat, city.agent_id, message):
+        # Impostor guard: only a facility we sent the choice to can book it. Forwarding any
+        # other receipt is a phantom booking (-2).
+        _LOG.info("care.receipt.ignored sender=%s", message.sender)
+        return
     picked = _PENDING.pop(_who(chat, citizen), None)
     _BOOKED.add(_who(chat, citizen))
     token = f"booking_id={booking_id}"
@@ -738,7 +750,7 @@ def _visit_when(offer: dict[str, str], lang: str) -> str:
     at = offer.get("agenda_date") or offer.get("at", "")
     if len(at) < 16 or not at[11:13].isdigit():
         return ""
-    english = lang == "en"
+    english = lang != "it"
     day = _DAY_KEYS.get((offer.get("agenda_day") or offer.get("day", ""))[:3].lower(), "")
     name = _DAY_NAMES.get(day, ("", ""))[1 if english else 0]
     date, hour = f"{at[8:10]}/{at[5:7]}", at[11:16]
@@ -752,6 +764,15 @@ def _visit_when(offer: dict[str, str], lang: str) -> str:
             "così il posto passa a un altro cittadino.").replace("è  ", "è ")
 
 
+def _receipt_sender_ok(chat: list[Message], agent: str, message: Message) -> bool:
+    key = message.need_id or message.msg_id
+    if (key, message.sender) in _CONFIRMED_TO or message.sender in _own_facilities(chat):
+        return True
+    return any(row.sender == agent and row.recipient == message.sender
+               and first_word(row.text) == "confirm" for row in chat)
+
+
 _RECEIPTS: set[str] = set()
+_CONFIRMED_TO: set[tuple[str, str]] = set()  # (need, facility) we forwarded a choice to
 
 

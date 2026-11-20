@@ -646,6 +646,20 @@ def _rx(need_id: str | None, msg_id: str) -> str:
     return number if _RX.fullmatch(number) else "prescription_number-CASE"
 
 
+def _claim_plausible(doctor_id: str, langs: str, gender: str) -> bool:
+    """A partner's doctor_lang/doctor_gender agree with the shared doctor table."""
+
+    spec = _DOCTORS.get(doctor_id.rsplit("-", 1)[-1])
+    if spec is None:
+        return True  # a doctor we do not know: nothing to compare against
+    known, sex, _days = spec
+    if gender and gender.lower() != sex:
+        return False
+    claimed = {part.strip().lower() for part in langs.split("/") if part.strip()}
+    extra = claimed - (known - {"*"})
+    return not extra or ("*" in known and len(extra) == 1)
+
+
 def _speaks(doctor_id: str, lang: str) -> bool:
     spec = _DOCTORS.get(doctor_id.rsplit("-", 1)[-1])
     if spec is None:

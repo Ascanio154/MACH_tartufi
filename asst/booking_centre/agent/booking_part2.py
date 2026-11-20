@@ -268,7 +268,7 @@ def _phrase(
     citizen: str = "",
 ) -> str:
     italian, english = _PHRASES[name]
-    text = english if lang == "en" else italian
+    text = italian if lang == "it" else english
     if name == "unknown_offer" and chat is not None:
         ids = [o.get("offer_id", "") for o in _open_offers(chat, agent, citizen) if o.get("offer_id")]
         if ids:

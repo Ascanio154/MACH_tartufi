@@ -444,6 +444,18 @@ class Level4Live(_Fresh):
         self.assertEqual(len(waits), 1)
         self.assertLessEqual(before, 1)
 
+    async def test_receipt_from_unknown_agent_not_forwarded(self) -> None:
+        city = await asked_city()
+        await partner_says(city, "agent:impostor", "booking.receipt booking_id=bk-x ledger_ref=lr-x")
+        self.assertEqual([t for t in city.sent_to(CIT) if t.startswith("booking.receipt")], [])
+
+    async def test_partner_false_doctor_language_dropped(self) -> None:
+        city = PartnerCity(lang_chat("en", PAST_ONLY), peers=peers())
+        await advance(city)
+        lie = VALID_B + " doctor_lang=it/en doctor_gender=m"  # h2 speaks only Italian
+        await partner_says(city, PX1, lie)
+        self.assertEqual(offer_messages(city), [])
+
 
 if __name__ == "__main__":
     unittest.main()

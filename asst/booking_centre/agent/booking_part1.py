@@ -506,7 +506,7 @@ def _pick(slots: list[dict[str, str]], days: set[str], limit: int = _MAX_OFFERS)
 def _offer_sentence(lang: str, days: set[str] | None = None, lead: str = "") -> str:
     """The words around the offer lines: why these slots, how to choose, what to bring."""
 
-    english = lang == "en"
+    english = lang != "it"  # rare-language citizens write in English
     base = lead or (_OFFER_EN if english else _OFFER_IT)
     if days and not lead:
         names = {"mon": ("lunedì", "Monday"), "tue": ("martedì", "Tuesday"),
