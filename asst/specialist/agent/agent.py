@@ -938,6 +938,12 @@ async def _facility(
         await _on_reported(city, message, chat)
     elif "checkin" in kind and message.sender.startswith("citizen:"):
         await _on_checkin(city, message, chat, reports=reports)
+    elif (
+        reports
+        and message.sender.startswith("citizen:")
+        and _report_pending(chat, city.agent_id, message.sender)
+    ):
+        await _on_report_consent(city, message, chat)
     elif "confirm" in kind:
         await _on_confirm(city, message, chat, hold_self=hold_self)
 
@@ -1131,12 +1137,81 @@ async def _on_checked_in(
     if not booking_id:
         return
     token = f"booking_id={booking_id}"
-    if reports and not _we(chat, city.agent_id, token, to=LEDGER, word="report"):
-        await _say(city, LEDGER, f"report booking_id={booking_id} outcome_code=VISIT")
     if citizen and not _we(chat, city.agent_id, token, to=citizen, word="checkin"):
         await _say(city, citizen, f"checkin booking_id={booking_id}")
     if not reports:
         return
+    if _we(chat, city.agent_id, token, to=LEDGER, word="report"):
+        return
+    if citizen:
+        # Ask consent to share the report; the citizen's answer files it (see _on_report_consent).
+        if not _we(chat, city.agent_id, token, to=citizen, word="consent"):
+            await _say(
+                city,
+                citizen,
+                f"consent purpose=report_sharing {token} Posso condividere il suo referto?",
+            )
+        return
+    await _file_report(city, message, chat, booking_id, consent_ref="")
+
+
+def _report_pending(chat: list[Message], agent: str, citizen: str) -> str:
+    """Booking whose report-consent question we asked this citizen and whose report is not filed."""
+
+    booking_id = ""
+    for row in chat:
+        if row.sender != agent or row.recipient != citizen:
+            continue
+        if first_word(row.text) == "consent" and "purpose=report_sharing" in row.text.split():
+            booking_id = fields_of(row.text).get("booking_id", booking_id)
+    if not booking_id or _we(chat, agent, f"booking_id={booking_id}", to=LEDGER, word="report"):
+        return ""
+    return booking_id
+
+
+def _booking_consents(chat: list[Message], agent: str) -> set[str]:
+    """consent_ref values already used for the booking (hold/commit), not for the report."""
+
+    used: set[str] = set()
+    for row in chat:
+        if row.recipient == LEDGER and row.sender == agent:
+            ref = fields_of(row.text).get("consent_ref", "")
+            if ref:
+                used.add(ref)
+        if "confirm" in words(row.text):
+            ref = fields_of(row.text).get("consent_ref", "")
+            if ref:
+                used.add(ref)
+    return used
+
+
+async def _on_report_consent(city: City, message: Message, chat: list[Message]) -> None:
+    """The citizen answered the report_sharing question. Any answer without a new consent_ref
+    is a refusal: file the report anyway, unshared."""
+
+    booking_id = _report_pending(chat, city.agent_id, message.sender)
+    if not booking_id:
+        return
+    fields = fields_of(message.text)
+    ref = fields.get("consent_ref", "")
+    purpose = fields.get("purpose", "report_sharing")
+    if purpose != "report_sharing" or ref in _booking_consents(chat, city.agent_id):
+        ref = ""
+    await _file_report(city, message, chat, booking_id, consent_ref=ref)
+
+
+async def _file_report(
+    city: City, message: Message, chat: list[Message], booking_id: str, *, consent_ref: str
+) -> None:
+    """Write the report on the Ledger first, then tell the citizen."""
+
+    token = f"booking_id={booking_id}"
+    if not _we(chat, city.agent_id, token, to=LEDGER, word="report"):
+        parts = ["report", token, "outcome_code=VISIT"]
+        if consent_ref:
+            parts.append(f"consent_ref={consent_ref}")
+        if not await _say(city, LEDGER, " ".join(parts)):
+            return
     found = await _await_line(city, message.need_id, chat, "reported", token, op="report")
     if found is None:
         _LOG.info("care.report.missing", extra={"need_id": (message.need_id or "")[:48]})
