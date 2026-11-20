@@ -1,7 +1,7 @@
 agent_id: agent:pxvd2kk2yx5j
 team: team:tartufi-pazzi
 name: family_counseling
-version: 1.0.2
+version: 1.0.4
 cap_versions:
   - "1.0"
 profiles:
