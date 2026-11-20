@@ -64,7 +64,39 @@ async def _partner_cancel(
             key = message.need_id or message.msg_id
             await _ask_renewal(city, citizen, number, _lang(chat), chat, city.agent_id, key)
         return
+    if citizen and fixed is None and message.sender not in _own_facilities(chat) \
+            and refused.get("facility", message.sender) not in _own_facilities(chat):
+        # Journey 118: a partner ASST refused the slot it offered. Our ASST had nothing, so
+        # ask the partners we have not asked yet instead of closing the path.
+        await _partner_retry(city, message, chat, citizen, key)
+        return
     await _advance(city, message, chat, fixed=fixed, replacing=True)
+
+
+async def _partner_retry(
+    city: City, message: Message, chat: list[Message], citizen: str, key: str
+) -> None:
+    agent = city.agent_id
+    number = _number(chat)
+    row = _rx_line(chat, agent, number) if number else None
+    reply = {} if row is None else fields_of(row.text)
+    before = _partners_asked(chat, agent, key)
+    _sent(f"{key}|{number}").offers.discard("partner-offered")
+    await _ask_partners(city, chat, agent, citizen, reply.get("procedure"), reply.get("priority"),
+                        key, avoid=message.sender)
+    fresh = _partners_asked(chat, agent, key) - before
+    if not fresh:
+        await _close_search(city, chat, agent, citizen, key)
+        return
+
+    def answered(rows: list[Message]) -> bool:
+        replies = {r.sender for r in rows if r.sender in fresh and first_word(r.text) == "cancel"}
+        return any(r.sender in fresh and first_word(r.text) == "offer" for r in rows) or (
+            fresh <= replies)
+
+    rows = await _until(city, message.need_id, chat, answered)
+    if not any(r.sender in fresh and first_word(r.text) == "offer" for r in rows):
+        await _close_search(city, rows, agent, citizen, key)
 
 
 # --- facility ----------------------------------------------------------------------------------

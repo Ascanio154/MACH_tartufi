@@ -161,7 +161,8 @@ VALID_C = poffer("p-C", "C", "h1", "2026-11-24T14:30:00+01:00", "tue")
 
 
 def offer_messages(city: PartnerCity) -> list[str]:
-    return [text for text in city.sent_to(CIT) if "offer offer_id=" in text]
+    return [text for text in city.sent_to(CIT)
+            if "offer offer_id=" in text and "waiting_list=true" not in text.split()]
 
 
 def offer_rows(text: str) -> list[str]:
@@ -308,7 +309,8 @@ class CrossConsent(_Fresh):
 
 
 def closing(city: PartnerCity) -> list[str]:
-    return [t for t in city.sent_to(CIT) if "vicine" in t and not t.startswith("offer")
+    return [t for t in city.sent_to(CIT) if "vicine" in t
+            and (not t.startswith("offer") or "waiting_list=true" in t.split())
             and "sto chiedendo" not in t]
 
 
@@ -343,7 +345,8 @@ class NextSteps(_Fresh):
                                capabilities=("hospital.physiatry",)) for i in range(4)]
         city = PartnerCity(lang_chat("ka", PAST_ONLY), peers=many)
         await advance(city)
-        self.assertEqual(len(requests(city)), 6)
+        # Level 4: one ASST's h3 speaks each rare language, so every partner is asked.
+        self.assertEqual(len(requests(city)), 8)
 
     async def test_partner_doctor_lang_used(self) -> None:
         city = PartnerCity(lang_chat("ka", PAST_ONLY), peers=peers())
@@ -400,6 +403,46 @@ class ReceiptOnce(_Fresh):
         await partner_says(city, HOSP, receipt)
         sent = [t for t in city.sent_to(CIT) if t.startswith("booking.receipt")]
         self.assertEqual(len(sent), 1)
+
+
+class Level4Live(_Fresh):
+    """Fixes from the level 4 live logs (journeys 106, 113, 118, 141)."""
+
+    async def test_nothing_anywhere_gets_waiting_list(self) -> None:
+        city = await asked_city()
+        waits = [t for t in city.sent_to(CIT) if "waiting_list=true" in t.split()]
+        self.assertEqual(len(waits), 1)
+        self.assertIn("lista d'attesa", waits[0])
+        self.assertEqual(bc.understood(msg(AGENT, waits[0], CIT)).type, "offer")
+
+    async def test_waiting_list_pick_is_acknowledged(self) -> None:
+        city = await asked_city()
+        await citizen_says(city, f"confirm offer_id=wl-{NEED} consent_ref=cons-booking")
+        self.assertIn("lista d'attesa", city.sent_to(CIT)[-1])
+        self.assertEqual(city.sent_to(HOSP), [])
+
+    async def test_partner_refusal_asks_new_partners(self) -> None:
+        city = await asked_city()
+        first = {to for to, _ in requests(city)}
+        await partner_says(city, PX1, VALID_A)
+        await citizen_says(city, "confirm offer_id=p-A consent_ref=cons-booking")
+        await citizen_says(city, "consent consent_ref=cx-1 purpose=cross_asst")
+        await partner_says(city, PX1, "cancel offer_id=p-A reason=facility_cancelled")
+        later = {to for to, _ in requests(city)} - first
+        self.assertTrue(later, requests(city))
+        self.assertNotIn(PX1, later)
+
+    async def test_partners_without_the_language_close_kindly(self) -> None:
+        city = PartnerCity(lang_chat("el", PAST_ONLY), peers=peers())
+        await advance(city)
+        before = len([t for t in city.sent_to(CIT) if "waiting_list=true" in t.split()])
+        for peer in {to for to, _ in requests(city)}:
+            await partner_says(city, peer, poffer("p-X", "X", "h1", "2026-11-24T09:00:00+01:00",
+                                                  "tue", facility=peer)
+                               + " doctor_lang=it/en doctor_gender=f")
+        waits = [t for t in city.sent_to(CIT) if "waiting_list=true" in t.split()]
+        self.assertEqual(len(waits), 1)
+        self.assertLessEqual(before, 1)
 
 
 if __name__ == "__main__":

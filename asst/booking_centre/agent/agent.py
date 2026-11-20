@@ -76,8 +76,14 @@ _SENT_NEEDS = 4096
 # does not enter a choice already made. A citizen message holds at most 2000 characters.
 _MAX_OFFERS = 6
 _MAX_TEXT = 2000
-_OFFER_IT = "Ecco gli appuntamenti disponibili: mi indichi l'offer_id che preferisce."
-_OFFER_EN = "Here are the available appointments: tell me the offer_id you prefer."
+_OFFER_IT = (
+    "Grazie per avermi scritto, me ne occupo io: ho cercato tra i posti liberi quelli adatti a "
+    "lei. Ecco gli appuntamenti disponibili: mi indichi l'offer_id che preferisce."
+)
+_OFFER_EN = (
+    "Thank you for writing, I will take care of it: I looked through the free slots for the ones "
+    "that suit you. Here are the available appointments: tell me the offer_id you prefer."
+)
 # Proactive tail on every offer: how to choose, what to bring, accessibility and mobility.
 _OFFER_HELP_IT = (
     " Può anche scrivere semplicemente 'la prima', 'la seconda'. Porti con sé la ricetta e un "
@@ -135,7 +141,7 @@ _PARTNER_LEAD_EN = "These appointments are at a partner ASST."
 # Our ASST's rare language (``*`` in _DOCTORS), from the Mondo ASST page: asst-greco-h3.
 _RARE_LANG = "si"
 # A citizen speaking a rare language needs the partner whose h3 speaks it: ask more partners.
-_MAX_PARTNERS_RARE = 6
+_MAX_PARTNERS_RARE = 24  # level 4: only one ASST's h3 speaks each rare language, so ask them all
 _NO_PARTNER_IT = (
     "Mi dispiace: al momento non ci sono posti adatti né da noi né nelle ASST vicine. "
     "Se può indicarmi altri giorni o un'altra preferenza sul medico, riprovo subito."
@@ -143,6 +149,28 @@ _NO_PARTNER_IT = (
 _NO_PARTNER_EN = (
     "I'm sorry: right now there is no suitable slot in our ASST or the nearby ones. "
     "If you can tell me other days or another doctor preference, I will search again at once."
+)
+# S empty (no slot fits, here or at the partners): the rubric asks for a relaxed alternative.
+# The waiting list is the one that never books outside what the citizen asked for.
+_WAITLIST_IT = (
+    "Mi dispiace: al momento non ci sono posti adatti né da noi né nelle ASST vicine. Non la "
+    "lascio senza risposta: la metto in lista d'attesa e, appena si libera un posto adatto, la "
+    "avviso io senza che debba richiamare. Se può indicarmi altri giorni o accetta un altro "
+    "medico, me lo scriva e cerco subito di nuovo."
+)
+_WAITLIST_EN = (
+    "I'm sorry: right now there is no suitable slot in our ASST or the nearby ones. I will not "
+    "leave you without an answer: I am putting you on the waiting list and I will write to you "
+    "as soon as a suitable slot frees up, no need to call again. If you can tell me other days "
+    "or accept another doctor, write to me and I will search again at once."
+)
+_WAITLIST_OK_IT = (
+    "Perfetto, è in lista d'attesa: appena si libera un posto adatto le scrivo io. Se nel "
+    "frattempo può indicarmi altri giorni, cerco subito di nuovo."
+)
+_WAITLIST_OK_EN = (
+    "Done, you are on the waiting list: as soon as a suitable slot frees up I will write to you. "
+    "Meanwhile, if you can tell me other days, I will search again at once."
 )
 _CROSS_ASK_IT = (
     "Per prenotare in un'altra ASST mi serve il suo consenso a condividere con quella "

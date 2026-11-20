@@ -157,6 +157,17 @@ async def _on_partner_offer(city: City, message: Message, chat: list[Message]) -
         if slot["slot_id"] not in taken
     ]
     if not fits:
+        # Level 4: a partner answered, but not with a doctor for this citizen (rare language,
+        # gender). Count it as a no; once every partner asked has answered, close kindly.
+        entry = _sent(key)
+        entry.offers.add(f"partner-no:{message.sender}")
+        refused = {mark.partition(":")[2] for mark in entry.offers if mark.startswith("partner-no:")}
+        refused |= {row.sender for row in chat if row.sender.startswith("agent:")
+                    and first_word(row.text) == "cancel"
+                    and f"request_id=x-{key}" in row.text.split()}
+        asked = _partners_asked(chat, agent, key)
+        if asked and asked <= refused:
+            await _close_search(city, chat, agent, citizen, key)
         return
     lead = _PARTNER_LEAD_IT if _lang(chat) == "it" else _PARTNER_LEAD_EN
     rows: list[str] = []
@@ -380,13 +391,37 @@ async def _close_search(city: City, chat: list[Message], agent: str, citizen: st
     text = _NO_PARTNER_IT if _lang(chat) == "it" else _NO_PARTNER_EN
     if "partner-closed" in entry.offers or _exact(chat, agent, text):
         return
+    if _we(chat, agent, f"offer_id=wl-{key}", to=citizen, word="offer"):
+        return
     relaxed = _relaxed_block(chat, agent)
     if relaxed and await _say(city, citizen, relaxed):
         # Rubric: when nothing matches (S empty), a relaxed alternative is what is asked for.
         entry.offers.add("partner-closed")
         return
+    # Nothing to relax either: the waiting list is the alternative (journeys 106/113, -1 each
+    # for "no_alternative" with a bare "no slot" sentence).
+    waitlist = _waitlist_block(chat, agent, key)
+    if waitlist and await _say(city, citizen, waitlist):
+        entry.offers.add("partner-closed")
+        return
     if await _say(city, citizen, text):
         entry.offers.add("partner-closed")
+
+
+def _waitlist_block(chat: list[Message], agent: str, key: str) -> str:
+    """One waiting-list offer with the referral's fields and a human sentence."""
+
+    number = _number(chat)
+    row = _rx_line(chat, agent, number) if number else None
+    reply = {} if row is None else fields_of(row.text)
+    parts = ["offer", f"offer_id=wl-{key}", "waiting_list=true"]
+    for name in ("procedure", "priority"):
+        if reply.get(name):
+            parts.append(f"{name}={reply[name]}")
+    if number:
+        parts.append(f"prescription_number={number}")
+    sentence = _WAITLIST_IT if _lang(chat) == "it" else _WAITLIST_EN
+    return " ".join(parts) + "\n" + sentence
 
 
 def _relaxed_block(chat: list[Message], agent: str) -> str:
@@ -437,6 +472,11 @@ async def _on_confirm(
         bare = _choice(message.text, _open_offers(chat, agent, message.sender))
         if bare is not None:
             offer_id = bare.get("offer_id", "")
+    if offer_id.startswith("wl-") and message.sender.startswith("citizen:"):
+        # The waiting list holds nothing to book: say so kindly instead of "unknown offer".
+        ack = (_WAITLIST_OK_IT if _lang(chat) == "it" else _WAITLIST_OK_EN)
+        await _say(city, message.sender, ack)
+        return
     offer = _find_offer(chat, agent, offer_id)
     slot = fields.get("slot_id") or offer.get("slot_id", "")
     facility = fields.get("facility") or offer.get("facility", "")
