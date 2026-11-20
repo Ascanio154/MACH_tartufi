@@ -25,6 +25,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -47,6 +48,12 @@ SMOKE = {
 POLL_SECONDS = 60
 RETRIES = 3
 HEALTH_SECONDS = int(os.environ.get("DEPLOY_HEALTH_SECONDS", "150"))
+# City Hall allows one deploy per team every 2 minutes; keep a small margin.
+QUOTA_GAP = int(os.environ.get("DEPLOY_QUOTA_GAP", "130"))
+STATE_LOCK = threading.RLock()
+GIT_LOCK = threading.Lock()
+START_LOCK = threading.Lock()
+_LAST_START = [0.0]
 
 
 # --- pure helpers (unit-tested) ---------------------------------------------------------------
@@ -132,10 +139,11 @@ def load() -> dict:
 
 
 def save(state: dict) -> None:
-    DEPLOY_DIR.mkdir(exist_ok=True)
-    tmp = STATE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(state, indent=2))
-    tmp.replace(STATE)
+    with STATE_LOCK:
+        DEPLOY_DIR.mkdir(exist_ok=True)
+        tmp = STATE.with_suffix(f".{threading.get_ident()}.tmp")
+        tmp.write_text(json.dumps(state, indent=2))
+        tmp.replace(STATE)
 
 
 def live(agent: str, cwd: Path) -> tuple[str, str]:
@@ -157,9 +165,11 @@ def set_card_version(card: Path, version: str) -> None:
     card.write_text(re.sub(r"^version:.*$", f"version: {version}", text, count=1, flags=re.M))
 
 
-def worktree(sha: str) -> Path:
-    path = DEPLOY_DIR / f"wt-{sha[:10]}"
-    if not path.exists():
+def worktree(sha: str, agent: str = "") -> Path:
+    path = DEPLOY_DIR / f"wt-{sha[:10]}-{agent}"
+    with GIT_LOCK:
+        if path.exists():
+            return path
         code, out = sh(["git", "worktree", "add", "--detach", str(path), sha])
         if code:
             raise RuntimeError(f"worktree failed: {out.strip()[:200]}")
@@ -167,7 +177,8 @@ def worktree(sha: str) -> Path:
 
 
 def drop_worktree(path: Path) -> None:
-    sh(["git", "worktree", "remove", "--force", str(path)])
+    with GIT_LOCK:
+        sh(["git", "worktree", "remove", "--force", str(path)])
 
 
 # --- gate, deploy, health ---------------------------------------------------------------------
@@ -176,10 +187,11 @@ def drop_worktree(path: Path) -> None:
 def gate(agent: str, wt: Path) -> str | None:
     """None if the snapshot is fit to deploy, else the reason."""
 
-    brain = wt / "asst" / agent / "agent" / "agent.py"
-    code, out = sh([sys.executable, "-I", "-m", "py_compile", str(brain)], cwd=wt)
-    if code:
-        return f"compile: {out.strip()[-200:]}"
+    # agent.py may load sibling part files (booking_part*.py): compile every file in agent/.
+    for brain in sorted((wt / "asst" / agent / "agent").glob("*.py")):
+        code, out = sh([sys.executable, "-I", "-m", "py_compile", str(brain)], cwd=wt)
+        if code:
+            return f"compile {brain.name}: {out.strip()[-200:]}"
     for cache in wt.glob("asst/*/agent/__pycache__"):
         sh(["rm", "-rf", str(cache)])
     if (wt / "tests").exists():
@@ -233,7 +245,7 @@ def health(agent: str, target: str, state: dict, cwd: Path, dry: bool) -> None:
 
 def deploy(job: dict, state: dict, dry: bool) -> None:
     agent, sha = job["agent"], job["sha"]
-    wt = worktree(sha)
+    wt = worktree(sha, agent)
     asst = wt / "asst"
     log(f"{agent} @ {sha[:7]}: gate")
     reason = gate(agent, wt)
@@ -246,11 +258,18 @@ def deploy(job: dict, state: dict, dry: bool) -> None:
     card = asst / agent / "card.yaml"
     target = next_version(current, card_version(card), state["attempted"].get(agent, ""))
     set_card_version(card, target)
-    state["attempted"][agent] = target
+    with STATE_LOCK:
+        state["attempted"][agent] = target
     save(state)
     failures = 0
     while True:
         log(f"{agent} @ {sha[:7]}: deploy {target} (live {current})")
+        with START_LOCK:
+            gap = QUOTA_GAP - (time.time() - _LAST_START[0])
+            if gap > 0:
+                log(f"{agent}: waiting {int(gap)}s for the team quota slot")
+                time.sleep(gap)
+            _LAST_START[0] = time.time()
         if dry:
             outcome, wait, out = "promoted", 0, "dry-run"
         else:
@@ -261,7 +280,8 @@ def deploy(job: dict, state: dict, dry: bool) -> None:
             time.sleep(wait)
             continue
         if outcome == "promoted":
-            state["certified"].setdefault(agent, []).append(target)
+            with STATE_LOCK:
+                state["certified"].setdefault(agent, []).append(target)
             job["status"] = "live"
             log(f"{agent} {target} PROMOTED (certified) from {sha[:7]}")
             break
@@ -310,6 +330,16 @@ def scan(state: dict, hold_lines: int) -> None:
     state["last_seen"] = head
 
 
+def _job_thread(job: dict, state: dict, dry: bool) -> None:
+    try:
+        deploy(job, state, dry)
+    except Exception as err:  # keep the runner alive; the job is marked failed
+        job["status"] = "failed"
+        log(f"{job['agent']} error: {err}")
+    finally:
+        save(state)
+
+
 def run(args: argparse.Namespace) -> None:
     DEPLOY_DIR.mkdir(exist_ok=True)
     if LOCK.exists():
@@ -320,24 +350,26 @@ def run(args: argparse.Namespace) -> None:
         except OSError:
             pass
     LOCK.write_text(str(os.getpid()))
+    state = load()
+    threads: dict[str, threading.Thread] = {}
     try:
         while True:
-            state = load()
-            scan(state, args.hold_lines)
+            with STATE_LOCK:
+                scan(state, args.hold_lines)
+                for agent in [a for a, t in threads.items() if not t.is_alive()]:
+                    del threads[agent]
+                state["queue"] = [j for j in state["queue"]
+                                  if j["status"] in ("queued", "held", "deploying")]
+                for job in state["queue"]:
+                    if job["status"] != "queued" or job["agent"] in threads:
+                        continue
+                    job["status"] = "deploying"
+                    thread = threading.Thread(target=_job_thread, args=(job, state, args.dry_run),
+                                              name=job["agent"], daemon=True)
+                    threads[job["agent"]] = thread
+                    thread.start()
             save(state)
-            job = next((j for j in state["queue"] if j["status"] == "queued"), None)
-            if job is None:
-                time.sleep(POLL_SECONDS)
-                continue
-            job["status"] = "deploying"
-            save(state)
-            try:
-                deploy(job, state, args.dry_run)
-            except Exception as err:  # keep the runner alive; the job is marked failed
-                job["status"] = "failed"
-                log(f"{job['agent']} error: {err}")
-            state["queue"] = [j for j in state["queue"] if j["status"] in ("queued", "held", "deploying")]
-            save(state)
+            time.sleep(POLL_SECONDS if not threads else 10)
     finally:
         LOCK.unlink(missing_ok=True)
 
