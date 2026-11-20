@@ -1082,8 +1082,6 @@ async def _on_held(city: City, message: Message, chat: list[Message]) -> None:
         return
     _, consent, number = _booking_of(chat, city.agent_id, slot)
     if not consent:
-    _, consent, number = _booking_of(chat, city.agent_id, slot)
-    if not consent:
         _LOG.info(
             "care.held.noconsent",
             extra={"need_id": fields.get("need_id", "")[:48]},
