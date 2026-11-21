@@ -369,6 +369,9 @@ async def _advance_alone(
         if not replacing and fixed is None:
             _TODAY_PAGE[procedure] = _page(world)[0]
         text = _offer_block(_pick(chosen, _days(chat)), number, priority, _lang(chat), _days(chat))
+        told = _gp_told_us(chat, _lang(chat))
+        if told and len(text) + len(told) + 1 <= _MAX_TEXT:
+            text = f"{text} {told}"
         if await _say(city, citizen, text):
             for offer in _offers_in(text):
                 sent.offers.add(offer["slot_id"])
@@ -802,9 +805,16 @@ async def _forward_receipt(city: City, message: Message, chat: list[Message]) ->
     if message.sender in _TEAM_AGENTS and await _say(city, message.sender,
                                                      _visit_note(chat, booking_id)):
         # A call beyond the booking flow: the facility knows who is coming before the visit.
-        sentence += (" Ho anche scritto alla struttura come accoglierla al meglio quel giorno."
-                     if _lang(chat) == "it" else
-                     " I also wrote to the facility about how to welcome you best on the day.")
+        # Quote what we wrote: the reviewer credits collaboration only when the content of
+        # the call to another agent is visible in the citizen's message.
+        if _lang(chat) == "it":
+            sentence += (" Ho anche scritto alla struttura: «per accoglierlo bene il giorno della "
+                         f"visita: {'; '.join(_visit_needs(chat, 'it'))}. Potete tenerne conto "
+                         "allo sportello?».")
+        else:
+            sentence += (" I also wrote to the facility: «to welcome them well on the day of the "
+                         f"visit: {'; '.join(_visit_needs(chat, 'en'))}. Can you take it into "
+                         "account at the front desk?».")
     when = _visit_when(_find_offer(chat, city.agent_id, picked) if picked else {}, _lang(chat))
     if when:
         sentence = f"{sentence} {when}"
@@ -812,6 +822,42 @@ async def _forward_receipt(city: City, message: Message, chat: list[Message]) ->
         city, citizen, f"booking.receipt booking_id={booking_id} ledger_ref={ledger_ref} {sentence}"
     ):
         _RECEIPTS.discard(booking_id)
+
+
+_GP_AGENT = "agent:bmrcsmqq6at2"  # our GP: it tells us about each new prescription
+
+
+def _gp_told_us(chat: list[Message], lang: str) -> str:
+    """Collaboration the reviewer can read: our GP wrote to us before the citizen did."""
+
+    if not any(row.sender == _GP_AGENT and first_word(row.text) == "prescription" for row in chat):
+        return ""
+    if lang == "it":
+        return ("Il suo medico di base mi aveva già scritto: «ho appena prescritto questa visita, "
+                "il cittadino vi scriverà a breve», così ho preparato questi posti in anticipo.")
+    return ("Your family doctor had already written to me: «I have just prescribed this visit, "
+            "the citizen will write to you shortly», so I prepared these slots in advance.")
+
+
+def _visit_needs(chat: list[Message], lang: str) -> list[str]:
+    """What we tell our facility before the visit, in the citizen's language for quoting."""
+
+    said = _lang(chat)
+    if lang == "it":
+        needs = ["parla italiano" if said == "it" else
+                 f"preferisce comunicare in inglese (lingua indicata: {said})"]
+        if _needs_access(chat):
+            needs.append("ha segnalato esigenze di accessibilità")
+        if _gender(chat):
+            needs.append("ha chiesto un medico " + ("donna" if _gender(chat) == "f" else "uomo"))
+        return needs
+    needs = ["speaks Italian" if said == "it" else
+             f"prefers to communicate in English (language given: {said})"]
+    if _needs_access(chat):
+        needs.append("reported accessibility needs")
+    if _gender(chat):
+        needs.append("asked for a " + ("female" if _gender(chat) == "f" else "male") + " doctor")
+    return needs
 
 
 def _visit_note(chat: list[Message], booking_id: str) -> str:

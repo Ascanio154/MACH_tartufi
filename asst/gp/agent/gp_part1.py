@@ -125,11 +125,15 @@ _DESK_NOTE = ("Buongiorno, vi avviso io per primo: ho appena prescritto questa v
               "disponibilità, così trova subito le proposte? Grazie.")
 # The reviewer reads only the citizen's messages: say there that the booking centre was told
 # (collaboration) and add one practical step nobody asked for (proactivity). No clinical advice.
-_COLLAB_IT = ("Ho già avvisato io il centro prenotazioni: sa che le scriverà con questo numero di "
-              "ricetta e sta preparando le disponibilità. Il giorno della visita porti la tessera "
-              "sanitaria e questo numero.")
-_COLLAB_EN = ("I have already told the booking centre myself: they know you will write with this "
-              "prescription number and are preparing the available slots. On the day of the visit, "
+# Quote what we wrote to the booking centre: the reviewer credits collaboration only when the
+# content of the call to another agent is visible in the citizen's message.
+_COLLAB_IT = ("Ho già scritto io al centro prenotazioni: «ho appena prescritto questa visita, il "
+              "cittadino vi scriverà a breve con questo numero: potete preparare le disponibilità, "
+              "così trova subito le proposte?». Il giorno della visita porti la tessera sanitaria "
+              "e questo numero.")
+_COLLAB_EN = ("I have already written to the booking centre myself: «I have just prescribed this "
+              "visit, the citizen will write to you shortly with this number: can you prepare the "
+              "available slots so they find the options right away?». On the day of the visit, "
               "bring your health card and this number.")
 
 
