@@ -60,8 +60,9 @@ _RX = re.compile(r"^prescription_number-[A-Z0-9-]{4,40}$")
 _LOG = logging.getLogger("care")
 # The Relay accepts a ledger reply and then the agent rejects the push, so the reply sits in
 # the case history and never opens a turn. Wait briefly and read it back from history.
-_PULL_TRIES = 24
-_PULL_PAUSE = 0.25
+_PULL_TRIES = 3  # Leo: few history reads per turn, or renew/ack hit 422 and the message comes back
+_PULL_PAUSE = 1.0
+_PARTNER_TRIES = 4  # partner replies are slower: one window of about 3 s
 # Needs whose sent offers this process remembers; the oldest is forgotten first.
 _SENT_NEEDS = 4096
 

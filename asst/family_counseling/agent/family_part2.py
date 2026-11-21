@@ -639,7 +639,7 @@ async def _family_cross_search(
             return
     # A single bounded collection window; later replies never append another choice batch.
     answered: set[str] = set()
-    for attempt in range(min(_PULL_TRIES, 8)):
+    for attempt in range(_PARTNER_TRIES):
         try:
             _family_merge(state, await city.history(need_id=message.need_id))
         except CapError:
@@ -649,7 +649,7 @@ async def _family_cross_search(
                     and _family_head(row) in {"offer", "cancel"}}
         if answered == set(requests):
             break
-        if attempt + 1 < min(_PULL_TRIES, 8):
+        if attempt + 1 < _PARTNER_TRIES:
             await asyncio.sleep(_PULL_PAUSE)
     last_cancel = max((i for i, row in enumerate(state.rows) if row.sender == city.agent_id
                        and row.recipient == citizen and _family_head(row) == "cancel"), default=-1)

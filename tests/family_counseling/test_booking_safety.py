@@ -229,3 +229,26 @@ class BookingSafety(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SilentLedger(LedgerCity):
+    def __init__(self) -> None:
+        super().__init__()
+        self.reads = 0
+
+    async def history(self, peer=None, *, need_id=None):
+        self.reads += 1
+        return list(self.chat)
+
+
+class FewHistoryReads(unittest.IsolatedAsyncioTestCase):
+    """Leo: many history reads in one turn let the lease expire (renew/ack 422)."""
+
+    async def test_waiting_for_a_silent_ledger_reads_history_at_most_three_times(self):
+        city = SilentLedger()
+        found = await fc._await_line(city, "N-1", [], "held", "slot_id=S-1", op="hold")
+        self.assertIsNone(found)
+        self.assertLessEqual(city.reads, 3)
+        city.reads = 0
+        await fc._until(city, "N-1", [], lambda rows: False)
+        self.assertLessEqual(city.reads, 3)
