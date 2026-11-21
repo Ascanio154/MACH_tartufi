@@ -329,6 +329,21 @@ class Renewal(unittest.TestCase):
                 self.assertEqual(len(to(city, LEDGER)), 1)
                 self.assertEqual(to(city, CIT), [gp._ASK_SYMPTOM])
 
+    def test_expired_number_of_this_same_case_is_renewed(self):
+        # Rule P1: the booking centre sends the citizen back with the number we issued here.
+        city = FakeCity()
+        turn(city, CIT, REAL[0][0])
+        number = understood(msg(AGENT, to(city, CIT)[0])).body["prescription_number"]
+        row = next(text for text in to(city, LEDGER) if text.startswith("prescribe"))
+        fields = dict(part.split("=", 1) for part in row.split() if "=" in part)
+        city._ledger[f"prescription prescription_number={number}"] = (
+            f"prescription prescription_number={number} procedure={fields['procedure']} "
+            f"priority={fields['priority']} patient={CIT} state=expired")
+        turn(city, CIT, f"need.request prescription_number={number}")
+        fresh = understood(msg(AGENT, to(city, CIT)[-1]))
+        self.assertEqual(fresh.type, "prescription")
+        self.assertNotEqual(fresh.body["prescription_number"], number)
+
     def test_thanks_quoting_our_own_number_is_not_a_renewal(self):
         city = FakeCity()
         turn(city, CIT, REAL[0][0])

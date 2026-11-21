@@ -749,7 +749,11 @@ def _renewal_number(message: Message, chat: list[Message], agent: str) -> str | 
         for row in chat
         if row.sender == agent and "prescribe" in words(row.text)
     }
-    return None if value in ours else value
+    # Rule P1: the booking centre sends the citizen back with the number of THIS case, as a
+    # ``need.request`` with only the number. A thank-you quoting it is still not a renewal.
+    asks = "need.request" in words(message.text) or re.search(
+        r"rinnov|renew|scadut|expired", message.text, re.IGNORECASE)
+    return None if value in ours and not asks else value
 
 
 async def _renew(
