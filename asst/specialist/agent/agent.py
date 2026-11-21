@@ -57,8 +57,11 @@ _RX = re.compile(r"^prescription_number-[A-Z0-9-]{4,40}$")
 _LOG = logging.getLogger("care")
 # The Relay accepts a ledger reply and then the agent rejects the push, so the reply sits in
 # the case history and never opens a turn. Wait briefly and read it back from history.
-_PULL_TRIES = 24
-_PULL_PAUSE = 0.25
+# The live Ledger answers hold/commit/checkin/report in 15-20 s (Sat night): 24 x 0.25 s gave
+# up after 6 s and the receipt never left (no push reopened the turn). Wait up to ~40 s,
+# reading the history once a second (fewer reads, less load on the Relay).
+_PULL_TRIES = 40
+_PULL_PAUSE = 1.0
 # Needs whose sent offers this process remembers; the oldest is forgotten first.
 _SENT_NEEDS = 4096
 
