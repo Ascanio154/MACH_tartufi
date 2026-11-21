@@ -448,7 +448,7 @@ async def _on_checked_in(
     if reports and not _we(chat, city.agent_id, token, to=LEDGER, word="report"):
         await _say(city, LEDGER, f"report booking_id={booking_id} outcome_code=VISIT")
     if citizen and not _we(chat, city.agent_id, token, to=citizen, word="checkin"):
-        await _say(city, citizen, f"checkin booking_id={booking_id}")
+        await _say(city, citizen, f"checkin booking_id={booking_id} {_checkin_words(city, chat, citizen)}")
     if not reports:
         return
     found = await _await_line(city, message.need_id, chat, "reported", token, op="report")
@@ -469,3 +469,51 @@ async def _on_reported(city: City, message: Message, chat: list[Message]) -> Non
     if _we(chat, city.agent_id, token, to=citizen, word="report"):
         return
     await _say(city, citizen, f"report booking_id={booking_id} outcome_code=VISIT")
+
+
+# --- words for the citizen ---------------------------------------------------------------------
+# The act and its key=value tokens come first; the sentence after them is for the person.
+# No clinical advice. The sentence avoids the words "consent" and "report": the code reads them
+# back from sent messages to know what was already done.
+_EN_HINTS = re.compile(
+    r"\b(hello|hi|good morning|i am|i'm|my|the|please|thanks?|appointment|doctor|here|arrived)\b",
+    re.IGNORECASE,
+)
+_IT_HINTS = re.compile(
+    r"\b(buongiorno|buonasera|salve|sono|grazie|il|la|mio|mia|per|della|visita|prenotazione)\b",
+    re.IGNORECASE,
+)
+
+
+def _citizen_lang(chat: list[Message], citizen: str) -> str:
+    """'en' when the citizen writes (or asked) in English, else 'it'."""
+
+    en = it = 0
+    for row in chat:
+        if row.sender != citizen:
+            continue
+        lang = fields_of(row.text).get("lang", "").lower()
+        if lang:
+            return "en" if lang.startswith("en") else "it"
+        en += len(_EN_HINTS.findall(row.text))
+        it += len(_IT_HINTS.findall(row.text))
+    return "en" if en > it else "it"
+
+
+def _checkin_words(city: City, chat: list[Message], citizen: str) -> str:
+    street = _own_street(city)
+    if _citizen_lang(chat, citizen) == "en":
+        where = f" at {street}" if street else ""
+        return (
+            f"Welcome to the physiatry clinic of ASST Greco hospital{where}: your arrival is "
+            "registered. Please take a seat in the waiting room, we will call you when the doctor "
+            "is ready. After the visit the doctor will tell you the next steps. If you need help "
+            "with access, just tell the staff."
+        )
+    where = f" in {street}" if street else ""
+    return (
+        f"Benvenuta o benvenuto all'ambulatorio di fisiatria dell'ospedale dell'ASST Greco{where}: "
+        "il suo arrivo è registrato. Si accomodi in sala d'attesa, la chiamiamo appena il medico è "
+        "pronto. Dopo la visita il medico le spiega i passi successivi. Se ha bisogno di "
+        "assistenza per l'accesso, lo dica pure al personale."
+    )
