@@ -432,6 +432,9 @@ class LogReport2343(_Fresh):
         self.assertFalse(any("offer_id=none" in text for text in to_citizen(city)))
 
     async def test_refused_doctor_not_offered_again_that_day(self) -> None:
+        # The fixture's S-2 is 4-8 agenda hours ahead: keep the old 4 h lead for this check.
+        self.addCleanup(setattr, bc, "_LEAD_SLOW", bc._LEAD_SLOW)
+        bc._LEAD_SLOW = bc._LEAD
         chat = booking_chat(slots=DEFAULT_SLOTS[:5])
         city = PartnerCity(chat)
         await desk(city, chat[0])

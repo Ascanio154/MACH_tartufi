@@ -29,7 +29,7 @@ def fitting(
         horizon = born + timedelta(days=_DEADLINE_DAYS[priority]) - _BORN_MARGIN
     else:
         horizon = now + timedelta(days=_DEADLINE_DAYS.get(priority or "", 14))
-    earliest = now + _LEAD
+    earliest = now + (_LEAD if priority == "U" else _LEAD_SLOW)
     chosen: list[tuple[datetime, dict[str, str]]] = []
     for line in lines:
         slot = fields_of(line)

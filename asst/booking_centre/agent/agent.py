@@ -38,6 +38,10 @@ _ACK_AFTER = 4.0  # seconds before a citizen hears "I am on it" while we read th
 # Four agenda hours is about half a minute of real time at 480x, so a slot is still
 # ahead when the citizen decides. One hour was already past by then.
 _LEAD = timedelta(hours=4)
+# Sat night: each message takes ~3.5 real min (= 3.5 agenda hours) and the city clock jumps,
+# so offer -> confirm costs ~7 agenda hours: slots closer than this were refused as "past"
+# (21 of 55 refusals). U keeps the short lead, or nothing is left for today.
+_LEAD_SLOW = timedelta(hours=8)
 # Doctor key (the last segment of doctor_id) -> languages, gender, days. ``*`` is the ASST's
 # rare language. The Ledger's slot line names the doctor; it does not repeat this table.
 _DOCTORS: dict[str, tuple[frozenset[str], str, frozenset[str]]] = {
