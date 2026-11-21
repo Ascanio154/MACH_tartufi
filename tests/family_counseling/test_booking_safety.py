@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
 from city_sdk.city import LEDGER, CapError
 
@@ -252,3 +254,30 @@ class FewHistoryReads(unittest.IsolatedAsyncioTestCase):
         city.reads = 0
         await fc._until(city, "N-1", [], lambda rows: False)
         self.assertLessEqual(city.reads, 3)
+
+
+class Level8RedFlags(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        fc._FAMILY_CASES.clear()
+
+    async def test_free_text_alarm_escalates_with_112_and_never_books(self):
+        for text, english in (("Ho una stretta al petto da stamattina, vorrei un appuntamento", False),
+                              ("Non riesco a respirare bene e vorrei parlare con qualcuno", False),
+                              ("I fainted yesterday and I would like an appointment please", True)):
+            fc._FAMILY_CASES.clear()
+            city = LedgerCity()
+            message = msg(CIT, text, AGENT)
+            city.chat.append(message)
+            city.inbound = message
+            with mock.patch.object(fc, "role_of", return_value="family_counseling"):
+                await fc.main(SimpleNamespace(is_emergency=False, summary=text), city)
+            said = city.to_citizen()
+            self.assertTrue(said and said[-1].startswith("escalate.emergency reason=red_flag"), text)
+            self.assertIn("112", said[-1])
+            self.assertEqual(english, "call 112" in said[-1])
+            self.assertEqual(city.to_ledger("hold"), [])
+
+    async def test_ordinary_request_is_not_an_emergency(self):
+        city = LedgerCity()
+        await citizen_says(city, "Buongiorno, vorrei un appuntamento al consultorio per un colloquio")
+        self.assertFalse(any(t.startswith("escalate.emergency") for t in city.to_citizen()))

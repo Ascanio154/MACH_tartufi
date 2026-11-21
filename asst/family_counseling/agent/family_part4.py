@@ -301,7 +301,7 @@ async def _family_turn(city: City, message: Message, state: _FamilyCase) -> None
     except _FamilyWriteStopped as stopped:
         _LOG.info("family.write.stopped reason=%s", stopped.reason)
         if stopped.reason == "emergency":
-            await _say(city, citizen, "escalate.emergency reason=red_flag")
+            await _say(city, citizen, _emergency_line(message))
         else:
             await _family_stop_note(city, state, citizen, stopped.reason)
             if stopped.reason == "choice_withdrawn" and _family_reoffer_requested(state, citizen):

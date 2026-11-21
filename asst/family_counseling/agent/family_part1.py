@@ -9,7 +9,9 @@ def _emergency(message: Message) -> bool:
     if understood(message).body.get("is_emergency") is True:
         return True
     lowered = message.text.lower()
-    return any(flag in lowered for flag in _RED_FLAGS)
+    if any(flag in lowered for flag in _RED_FLAGS):
+        return True
+    return any(pattern.search(lowered) for pattern in _RED_FLAG_RE)
 
 
 def _symptom(message: Message) -> str | None:
@@ -40,7 +42,7 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
         return
     if _emergency(message):
         if not _we(chat, agent, "escalate.emergency", to=message.sender, word="escalate.emergency"):
-            await _say(city, message.sender, "escalate.emergency reason=red_flag")
+            await _say(city, message.sender, _emergency_line(message))
         return
     code = _symptom(message)
     if code is None:

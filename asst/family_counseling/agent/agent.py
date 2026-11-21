@@ -55,6 +55,38 @@ _RED_FLAGS = (
     "dolore al petto",
     "chest pain",
 )
+# Level 8: is_emergency may be false and the alarm only in the free text. Same patterns as the
+# GP and the booking centre: a body part near a warning word, plus breathing trouble and fainting.
+_CHEST = r"\b(petto|torace|sterno|chest)\b"
+_CHEST_BAD = (
+    r"\b(dolor|male?\b|peso\b|pesante|oppress|opprim|stringe|stretta|schiacci|brucia|"
+    r"fitt[ae]\b|morsa|costri|pain|hurt|ach(e|es|ing)\b|tight|pressure|crush|heavy|squeez)"
+)
+_LEGS = r"\b(gamb[ae]|legs?)\b"
+_LEGS_BAD = (
+    r"\b(forza|debol|non (le )?sento|non riesco a muover|non si muov|cedono|paralizz|"
+    r"intorpidit|addormentat|insensibil|"
+    r"strength|weak|numb|can'?t (feel|move)|cannot (feel|move)|giving way|give way|paraly)"
+)
+_RED_FLAG_RE = tuple(
+    re.compile(rf"{a}.{{0,40}}{b}|{b}.{{0,40}}{a}", re.DOTALL)
+    for a, b in ((_CHEST, _CHEST_BAD), (_LEGS, _LEGS_BAD))
+) + (re.compile(r"\binfarto\b|heart attack|\bictus\b|\bstroke\b|"
+               r"non riesco a respirare|fatico a respirare|fatica a respirare|manca il respiro|"
+               r"can'?t breathe|cannot breathe|sto per svenire|sono svenut|\bsvenut[oa]\b|"
+               r"perso conoscenza|passed out|\bfainted\b"),)
+# No act word in these sentences: understood() reads the last act word of a text as the act.
+_EMERGENCY_IT = ("Questa è un'emergenza: chiami subito il 112 o vada al pronto soccorso più vicino. "
+                 "Non fisso un appuntamento al consultorio.")
+_EMERGENCY_EN = ("This is an emergency: call 112 now or go to the nearest emergency room. "
+                 "I am not booking a consultorio appointment.")
+
+
+def _emergency_line(message: Message) -> str:
+    """The escalation with a human sentence in the citizen's language (lang= token first)."""
+    lang = fields_of(message.text).get("lang", "").lower() or _fc_guess_lang(message.text)
+    sentence = _EMERGENCY_EN if lang == "en" else _EMERGENCY_IT
+    return f"escalate.emergency reason=red_flag {sentence}"
 _DEADLINE_DAYS = {"B": 2, "D": 5}
 _RX = re.compile(r"^prescription_number-[A-Z0-9-]{4,40}$")
 _LOG = logging.getLogger("care")
@@ -116,11 +148,7 @@ async def main(need: Need, city: City) -> None:
             or _emergency(message)
         )
     ):
-        await _say(
-            city,
-            message.sender,
-            "escalate.emergency reason=red_flag",
-        )
+        await _say(city, message.sender, _emergency_line(message))
         return
 
     if clinical(text):
