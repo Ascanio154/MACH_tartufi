@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -420,3 +421,60 @@ class Level8EverydayWords(unittest.IsolatedAsyncioTestCase):
             said = await self.run_main(city, "Ho un po' di mal di testa, vorrei un appuntamento")
             self.assertEqual(said, [])
             self.assertEqual(city.asked, 1)
+
+
+class SharedLedgerReads(unittest.IsolatedAsyncioTestCase):
+    """Sat 21/11: every consultorio case waited on the Ledger for its own agenda and slot list
+    (15-20+ s each); turns ran long and other citizens' messages were "held while running".
+    A second case right after the first reuses those answers instead of waiting again."""
+
+    def setUp(self):
+        self._old = (fc._SHARED_AGENDA_FOR, fc._SHARED_WORLD_FOR)
+        fc._SHARED_AGENDA_FOR, fc._SHARED_WORLD_FOR = 120.0, 60.0
+
+    def tearDown(self):
+        fc._SHARED_AGENDA_FOR, fc._SHARED_WORLD_FOR = self._old
+        fc._SHARED_READS.clear()
+
+    async def test_second_case_offers_without_asking_the_ledger_again(self):
+        from city_sdk.city import Message as _M
+
+        class TwoNeeds(LedgerCity):
+            def __init__(self):
+                super().__init__()
+                self.need = "N-1"
+            async def say(self, to, text, *, status=None):
+                sent = _M(type="chat", sender=AGENT, msg_id=f"s-{len(self.chat)}", need_id=self.need,
+                          body={"text": text}, recipient=to)
+                self.chat.append(sent)
+                if to == LEDGER:
+                    self.chat.append(_M(type="chat", sender=LEDGER, msg_id=f"l-{len(self.chat)}",
+                                        need_id=self.need, body={"text": self._answer(text)},
+                                        recipient=AGENT))
+                return sent.msg_id
+            async def history(self, peer=None, *, need_id=None):
+                return [row for row in self.chat if row.need_id == (need_id or self.need)]
+
+        async def ask(city, need, citizen):
+            city.need = need
+            row = _M(type="chat", sender=citizen, msg_id=f"c-{need}", need_id=need,
+                     body={"text": "Buongiorno, vorrei un appuntamento al consultorio"}, recipient=AGENT)
+            city.chat.append(row)
+            city.inbound = row
+            await fc._family(city, row, await city.history(need_id=need))
+
+        fc._FAMILY_CASES.clear()
+        fc._SHARED_READS.clear()
+        city = TwoNeeds()
+        await ask(city, "N-1", CIT)
+        await ask(city, "N-2", "citizen:c10")
+        second = [row.text for row in city.chat if row.need_id == "N-2" and row.sender == AGENT]
+        asked = [t for t in second if t.split()[0] in {"agenda", "world"}]
+        self.assertEqual(asked, [], "the second case reuses the first case's agenda and slots")
+        offers = [o for t in second for o in fc._offer_rows(t)]
+        self.assertTrue(offers, second)
+
+    async def test_old_reads_are_not_reused(self):
+        fc._SHARED_READS.clear()
+        fc._SHARED_READS["agenda"] = (time.monotonic() - 3600, None)
+        self.assertIsNone(fc._shared_read("agenda"))

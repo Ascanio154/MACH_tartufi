@@ -18,6 +18,9 @@ _spec = importlib.util.spec_from_file_location("family_brain", _BRAIN)
 fc = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(fc)
 fc._PULL_PAUSE = 0
+# Shared Ledger reads are off in these tests (each scenario controls its own clock);
+# SharedLedgerReads switches them on.
+fc._SHARED_AGENDA_FOR = fc._SHARED_WORLD_FOR = -1.0
 
 AGENT = "agent:fc"
 CIT = "citizen:c9"

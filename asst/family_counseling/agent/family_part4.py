@@ -235,7 +235,7 @@ async def _family_validate_write(city: City, state: _FamilyCase, citizen: str, t
             raise _FamilyWriteStopped("consent_missing")
         if op == "hold":
             # A local choice needs the same fresh-clock check as an external one.
-            clock = await _family_read(city, state, "agenda", "agenda", refresh=True)
+            clock = await _family_read(city, state, "agenda", "agenda", refresh=True, shared=False)
             now = _when(_family_fields(clock).get("agenda_now", "")) if clock else None
             at = _when(offer.get("agenda_date", offer.get("at", "")))
             if now is None or at is None:

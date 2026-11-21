@@ -395,14 +395,51 @@ def _family_preferences(rows: list[Message], citizen: str) -> dict[str, str]:
     return prefs
 
 
+# Sat 21/11: every case waited on the Ledger for its own agenda and slot list (15-20+ s each),
+# so turns ran long and other citizens' messages were "held while running". A case reuses an
+# answer another case got moments ago: the agenda advanced at 60 agenda s per real s, the slot
+# pages as they were (a slot taken since is refused at the hold, which re-checks the clock).
+_SHARED_READS: dict[str, tuple[float, Message | None]] = {}
+_SHARED_AGENDA_FOR = 120.0  # real seconds
+_SHARED_WORLD_FOR = 60.0
+
+
+def _shared_read(command: str) -> str | None:
+    """The text of a recent Ledger answer to ``command`` from any case, or None."""
+
+    item = _SHARED_READS.get(command)
+    if item is None or item[1] is None:
+        return None
+    age = time.monotonic() - item[0]
+    if command == "agenda":
+        if not 0 <= age <= _SHARED_AGENDA_FOR:
+            return None
+        then = _when(_family_fields(item[1]).get("agenda_now", ""))
+        return None if then is None else f"agenda agenda_now={(then + timedelta(seconds=60 * age)).isoformat()}"
+    if command.startswith("world") and 0 <= age <= _SHARED_WORLD_FOR:
+        return item[1].text
+    return None
+
+
 async def _family_read(
-    city: City, state: _FamilyCase, command: str, head: str, *, refresh: bool
+    city: City, state: _FamilyCase, command: str, head: str, *, refresh: bool, shared: bool = True
 ) -> Message | None:
+    text = _shared_read(command) if shared else None
+    if text is not None:
+        need = next((row.need_id for row in state.rows if row.need_id), None)
+        row = Message(type="chat", sender=LEDGER, msg_id=f"shared-{len(state.rows)}-{first_word(command)}",
+                      need_id=need, body={"text": text}, recipient=city.agent_id)
+        state.rows.append(row)
+        return row
     request = _family_request(state, city.agent_id, first_word(command), **fields_of(command))
     if request is not None and not refresh:
-        return await _family_wait(city, state, request, head)
-    request = await _family_send(city, state, LEDGER, command, repeat=True)
-    return None if request is None else await _family_wait(city, state, request, head)
+        reply = await _family_wait(city, state, request, head)
+    else:
+        request = await _family_send(city, state, LEDGER, command, repeat=True)
+        reply = None if request is None else await _family_wait(city, state, request, head)
+    if reply is not None and _family_head(reply) == head:
+        _SHARED_READS[command] = (time.monotonic(), reply)
+    return reply
 
 
 async def _family_offers(
