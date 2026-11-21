@@ -518,6 +518,9 @@ async def _file_report(
         parts = ["report", token, "outcome_code=VISIT"]
         if consent_ref:
             parts.append(f"consent_ref={consent_ref}")
+        follow_up = await _follow_up(city, message, chat, booking_id)
+        if follow_up:
+            parts.append(f"follow_up_prescription_number={follow_up}")
         if not await _say(city, LEDGER, " ".join(parts)):
             return
     found = await _await_line(city, message.need_id, chat, "reported", token, op="report")
@@ -527,6 +530,96 @@ async def _file_report(
     reply, fresh = found
     if first_word(reply.text) == "reported":
         await _on_reported(city, reply, fresh)
+
+
+# --- follow-up (CTRL-CARD) ----------------------------------------------------------------------
+# The protocol table has no follow-up column: the specialist decides. Team rule (Mattia, kit
+# e19-rules): a cardiology visit that started from a symptom (VIS-CARD, priority B/D/U) gets a
+# CTRL-CARD check-up prescription; a visit that already is a periodic check (priority P, from
+# SYM-FOLLOWUP) does not, so check-ups never chain. Any doubt or refusal: no follow-up, the
+# report is filed anyway.
+_FOLLOW_UP_PROCEDURE = "CTRL-CARD"
+_FOLLOW_UP_PRIORITY = "P"
+
+
+def _visit_rx(chat: list[Message], agent: str) -> str:
+    """The prescription_number this visit was booked with."""
+
+    for row in chat:
+        if row.sender == LEDGER:
+            continue
+        number = fields_of(row.text).get("prescription_number", "")
+        if number and not number.endswith("-FU"):
+            return number
+    return ""
+
+
+def _follow_up_rx(need_id: str | None, booking_id: str) -> str:
+    raw = (need_id or booking_id or "CASE").upper()
+    suffix = "".join(ch if ch.isalnum() or ch == "-" else "-" for ch in raw).strip("-")[:37]
+    return f"prescription_number-{suffix}-FU"
+
+
+async def _follow_up(city: City, message: Message, chat: list[Message], booking_id: str) -> str:
+    """Issue the CTRL-CARD follow-up when the rule above asks for one; its number, or ""."""
+
+    agent = city.agent_id
+    citizen = _citizen(chat)
+    number = _visit_rx(chat, agent)
+    if not citizen or not number:
+        return ""
+    token = f"prescription_number={number}"
+    if not any(row.sender == LEDGER and first_word(row.text) == "prescription" and token in row.text.split() for row in chat):
+        if not await _say(city, LEDGER, f"prescription {token}"):
+            return ""
+        chat = await _until(
+            city,
+            message.need_id,
+            chat,
+            lambda rows: any(
+                row.sender == LEDGER and first_word(row.text) == "prescription" and token in row.text.split()
+                for row in rows
+            ),
+        )
+    rx: dict[str, str] = {}
+    for row in chat:
+        if row.sender == LEDGER and first_word(row.text) == "prescription" and token in row.text.split():
+            rx = fields_of(row.text)
+    if rx.get("procedure") != "VIS-CARD" or rx.get("priority", "P") == "P":
+        return ""
+    follow = _follow_up_rx(message.need_id, booking_id)
+    ftoken = f"prescription_number={follow}"
+    if not _we(chat, agent, ftoken, to=LEDGER, word="prescribe"):
+        if not await _say(
+            city,
+            LEDGER,
+            f"prescribe patient={citizen} procedure={_FOLLOW_UP_PROCEDURE} "
+            f"priority={_FOLLOW_UP_PRIORITY} follow_up_of={booking_id} {ftoken}",
+        ):
+            return ""
+    found = await _await_line(city, message.need_id, chat, "prescribed", ftoken, op="prescribe")
+    if found is None or first_word(found[0].text) != "prescribed":
+        return ""
+    if not _we(found[1], agent, ftoken, to=citizen, word="prescription"):
+        await _say(
+            city,
+            citizen,
+            f"prescription {ftoken} procedure={_FOLLOW_UP_PROCEDURE} priority={_FOLLOW_UP_PRIORITY} "
+            f"{_follow_up_words(found[1], citizen)}",
+        )
+    return follow
+
+
+def _follow_up_words(chat: list[Message], citizen: str) -> str:
+    if _citizen_lang(chat, citizen) == "en":
+        return (
+            "I have prepared your prescription for a cardiology check-up visit: you can book it "
+            "with the booking centre using this number."
+        )
+    return (
+        "Le ho preparato la ricetta per una visita di controllo cardiologica: la può prenotare "
+        "dal centro prenotazioni con questo numero."
+    )
 
 
 async def _on_reported(city: City, message: Message, chat: list[Message]) -> None:
