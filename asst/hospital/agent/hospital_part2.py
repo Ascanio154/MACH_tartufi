@@ -403,11 +403,17 @@ async def _finish_booking(
 ) -> bool:
     """Hold is in the mailbox. True once the booking is committed. Read the held line and commit before this turn ends."""
 
+    clock = asyncio.get_running_loop().time
+    started = clock()
     found = await _await_line(city, message.need_id, chat, "held", f"slot_id={slot}", op="hold")
     if found is None:
-        _LOG.info("care.held.missing", extra={"need_id": (message.need_id or "")[:48]})
+        _LOG.warning("care.hold.result need=%s slot=%s outcome=missing secs=%.0f",
+                     (message.need_id or "")[-12:], slot[-16:], clock() - started)
         return False
     reply, fresh = found
+    _LOG.warning("care.hold.result need=%s slot=%s outcome=%s secs=%.0f code=%s",
+                 (message.need_id or "")[-12:], slot[-16:], first_word(reply.text), clock() - started,
+                 (fields_of(reply.text).get("code") or fields_of(reply.text).get("reason") or "-")[:40])
     if first_word(reply.text) == "refused":
         await _on_refused(city, reply, fresh, hold_self=hold_self)
         return False
@@ -415,13 +421,18 @@ async def _finish_booking(
     hold_id = fields_of(reply.text).get("hold_id", "")
     if not hold_id:
         return False
+    started = clock()
     done = await _await_line(
         city, message.need_id, fresh, "committed", f"booking_id={hold_id}", op="commit"
     )
     if done is None:
-        _LOG.info("care.commit.missing", extra={"need_id": (message.need_id or "")[:48]})
+        _LOG.warning("care.commit.result need=%s hold=%s outcome=missing secs=%.0f",
+                     (message.need_id or "")[-12:], hold_id[-12:], clock() - started)
         return False
     reply, fresh = done
+    _LOG.warning("care.commit.result need=%s hold=%s outcome=%s secs=%.0f code=%s",
+                 (message.need_id or "")[-12:], hold_id[-12:], first_word(reply.text), clock() - started,
+                 (fields_of(reply.text).get("code") or fields_of(reply.text).get("reason") or "-")[:40])
     if first_word(reply.text) == "committed":
         await _on_committed(city, reply, fresh)
         return True
@@ -485,6 +496,8 @@ async def _on_refused(
     agent = city.agent_id
     fields = fields_of(message.text)
     reason = fields.get("reason") or fields.get("code") or "facility_cancelled"
+    _LOG.warning("care.refused need=%s reason=%s text=%s", (message.need_id or "")[-12:], reason[:40],
+                 " ".join(message.text.split())[:160])
     slot = ""
     for row in chat:
         if row.sender == agent and row.recipient == LEDGER and "hold" in words(row.text):
