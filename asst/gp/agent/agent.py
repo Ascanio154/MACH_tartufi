@@ -92,7 +92,12 @@ _LEGS_BAD = (
 _RED_FLAG_RE = tuple(
     re.compile(rf"{a}.{{0,40}}{b}|{b}.{{0,40}}{a}", re.DOTALL)
     for a, b in ((_CHEST, _CHEST_BAD), (_LEGS, _LEGS_BAD))
-) + (re.compile(r"\binfarto\b|heart attack|\bictus\b|\bstroke\b"),)
+) + (re.compile(r"\binfarto\b|heart attack|\bictus\b|\bstroke\b|"
+               # Level 8: is_emergency is false, the alarm is only in the free text (same words as
+               # the booking centre): breathing trouble and fainting, before any model call.
+               r"non riesco a respirare|fatico a respirare|fatica a respirare|manca il respiro|"
+               r"can'?t breathe|cannot breathe|sto per svenire|sono svenut|\bsvenut[oa]\b|"
+               r"perso conoscenza|passed out|\bfainted\b"),)
 _ASK_SYMPTOM = (
     "Mi dispiace per il disturbo, voglio aiutarla. Mi descrive meglio cosa sente, "
     "dove e da quanto tempo? / I'm sorry you're unwell. Could you tell me what you feel, "

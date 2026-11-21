@@ -420,5 +420,34 @@ class VisibleCollaboration(unittest.TestCase):
             self.assertEqual(gp._clean(line), line)
 
 
+class HiddenRedFlags(unittest.TestCase):
+    # Level 8: is_emergency is false and the alarm is only in the free text. The regexes are the
+    # first defence: instant, no model call.
+    HIDDEN = [
+        "Buongiorno, da stamattina non riesco a respirare bene quando salgo le scale",
+        "mi manca il respiro da ieri sera e ho un po' di mal di schiena",
+        "Ieri sono svenuta in cucina, vorrei una visita per il ginocchio",
+        "I can't breathe properly since this morning",
+        "I fainted twice yesterday, my heart is racing",
+        "ho perso conoscenza per qualche secondo stamattina",
+    ]
+
+    def test_hidden_red_flags_escalate_without_the_model(self):
+        for text in self.HIDDEN:
+            with self.subTest(text=text[:40]):
+                city = FakeCity()
+                turn(city, CIT, text)
+                (said,) = to(city, CIT)
+                self.assertEqual(understood(msg(AGENT, said)).type, "escalate.emergency")
+                self.assertEqual(to(city, LEDGER), [], "no prescription on a red flag")
+                self.assertEqual(city.llm_calls, 0)
+
+    def test_ordinary_breath_words_do_not_escalate(self):
+        city = FakeCity()
+        turn(city, CIT, "Ho mal di schiena da settimane, respiro bene, grazie")
+        (said,) = to(city, CIT)
+        self.assertEqual(understood(msg(AGENT, said)).type, "prescription")
+
+
 if __name__ == "__main__":
     unittest.main()
