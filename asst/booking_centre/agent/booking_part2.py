@@ -297,6 +297,12 @@ _PHRASES: dict[str, tuple[str, str]] = {
         "Thank you, I have your request and I am on it: I am checking your referral and the free "
         "slots, you will have the options in a moment.",
     ),
+    "still_checking": (
+        "Ci sto ancora lavorando: il registro risponde lentamente, le mando i posti liberi "
+        "appena sono pronti. Non serve riscrivere, la sua richiesta è già in lavorazione.",
+        "I am still working on it: the register is slow to answer, you will get the free slots "
+        "as soon as they are ready. No need to write again, your request is in progress.",
+    ),
     "offers_open": (
         "Le proposte che le ho inviato sono ancora valide: mi scriva l'offer_id che preferisce, "
         "oppure semplicemente 'la prima', 'la seconda' e così via. Se preferisce altri giorni "
@@ -586,8 +592,15 @@ async def _no_silence(city: City, message: Message, chat: list[Message]) -> None
                 city, citizen, f"data.request purpose=booking fields=prescription_number {sentence}"
             )
             return
-    if name == "checking" and _exact(fresh, agent, _phrase(name, lang)):
-        return  # a redelivered message: "I am on it" was already said, the offer follows
+    if name == "checking":
+        # A redelivery: this message already got its "I am on it" after it. A NEW message after
+        # one (21/11 12:31: no offer came, the citizen wrote again) gets a reply, never silence.
+        said = {_phrase("checking", lang), _phrase("still_checking", lang)}
+        at = next((i for i, row in enumerate(fresh) if row.msg_id == message.msg_id), len(fresh))
+        if any(row.sender == agent and row.text.strip() in said for row in fresh[at + 1:]):
+            return
+        if _exact(fresh, agent, _phrase("checking", lang)):
+            name = "still_checking"
     if name == "pending":
         # A confirm and its cancels in the same second run as parallel turns: both read the
         # history before either wrote, and the citizen got "Ho inoltrato..." twice (000319).

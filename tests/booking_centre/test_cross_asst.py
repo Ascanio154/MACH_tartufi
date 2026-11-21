@@ -132,6 +132,20 @@ class AskPartners(_Fresh):
         still = [t for t in city.sent_to(CIT) if t == bc._phrase("still_none", "it")]
         self.assertEqual(len(still), 1)
 
+    async def test_second_message_after_checking_gets_an_answer(self) -> None:
+        # 21/11 12:31: "I am on it", no offer, the citizen wrote again and got silence (-1).
+        city = PartnerCity(booking_chat(slots=PAST_ONLY), peers=peers())
+        first = city.chat[0]
+        await bc._no_silence(city, first, city.chat)
+        await bc._no_silence(city, first, city.chat)  # a redelivery: nothing new
+        self.assertEqual(city.sent_to(CIT), [bc._phrase("checking", "it")])
+        again = msg(CIT, f"need.request prescription_number={RX} lang=it", AGENT)
+        city.chat.append(again)
+        await bc._no_silence(city, again, city.chat)
+        await bc._no_silence(city, again, city.chat)  # its redelivery: nothing new
+        self.assertEqual(city.sent_to(CIT), [bc._phrase("checking", "it"),
+                                             bc._phrase("still_checking", "it")])
+
     async def test_district_first(self) -> None:
         chat = booking_chat(slots=PAST_ONLY, citizen_extra="area.district=7")
         city = PartnerCity(chat, peers=peers())
