@@ -86,6 +86,17 @@ class _Fresh(unittest.IsolatedAsyncioTestCase):
 
 
 class AskPartners(_Fresh):
+    async def test_expired_search_window_does_not_query_partners(self) -> None:
+        # The first agenda read anchors the referral deadline. A later retry may already be
+        # past it, while a fresh agenda reply makes the requested after= still later.
+        chat = booking_chat(slots=PAST_ONLY)
+        chat.append(msg(bc.LEDGER, "agenda agenda_now=2026-11-29T08:00:00+01:00", AGENT))
+        city = PartnerCity(chat, peers=peers())
+        await advance(city)
+        self.assertEqual(requests(city), [])
+        self.assertEqual(city.queries, [])
+        self.assertTrue(city.sent_to(CIT))
+
     async def test_no_local_slot_asks_partners(self) -> None:
         city = PartnerCity(booking_chat(slots=PAST_ONLY), peers=peers())
         await advance(city)

@@ -402,7 +402,15 @@ async def _ask_partners(
     parts = ["need.request", f"service_type={capability}", f"procedure={procedure}"]
     if priority:
         parts.append(f"priority={priority}")
-    parts.extend(_ring_criteria(chat, priority))
+    criteria = _ring_criteria(chat, priority)
+    window = fields_of(" ".join(criteria))
+    after = _when(window.get("after", ""))
+    deadline = _when(window.get("deadline", ""))
+    # A delayed agenda reply can put the safe booking lead past the referral deadline.
+    # No partner can satisfy that request; let the caller close with a real alternative.
+    if after is not None and deadline is not None and after >= deadline:
+        return False
+    parts.extend(criteria)
     # MACH-1.4: who declares itself gets the offered slots reserved for lease_s real seconds.
     parts += [f"mach={_MACH}", f"lease_s={_LEASE_ASK}", token]
     sent_now = False
