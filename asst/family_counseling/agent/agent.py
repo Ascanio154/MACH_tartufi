@@ -642,7 +642,7 @@ def fitting(
 # --- the rest of the brain ----------------------------------------------------------------------
 # City Hall refuses a brain file of thousands of lines, so the code lives in the files below,
 # next to this one. Each runs in THIS module's namespace, in order: one brain, as before.
-_PARTS = ('family_part1.py', 'family_part2.py', 'family_part3.py')
+_PARTS = ('family_part1.py', 'family_part2.py', 'family_part3.py', 'family_part4.py')
 
 
 def _load_parts() -> None:
