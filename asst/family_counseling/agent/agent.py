@@ -24,9 +24,10 @@ from city_sdk.city import LEDGER, CapError, City, Message, Need, OutOfScope, cli
 
 ROLES = ("booking_centre", "gp", "hospital", "specialist_care", "family_counseling")
 _MAX_PAGE = 8
-# Four agenda hours is about half a minute of real time at 480x, so a slot is still
-# ahead when the citizen decides. One hour was already past by then.
-_LEAD = timedelta(hours=4)
+# Agenda runs 60x and every message takes ~3.5 real minutes (= 3.5 agenda hours) to arrive:
+# offer -> citizen -> confirm costs ~7 agenda hours, so a slot must be at least 8 agenda hours
+# ahead when it is offered, or it is past at the hold (Sat morning: offers 4 days stale).
+_LEAD = timedelta(hours=8)
 # Doctor key (the last segment of doctor_id) -> languages, gender, days. ``*`` is the ASST's
 # rare language. The Ledger's slot line names the doctor; it does not repeat this table.
 _DOCTORS: dict[str, tuple[frozenset[str], str, frozenset[str]]] = {
@@ -146,8 +147,12 @@ _RX = re.compile(r"^prescription_number-[A-Z0-9-]{4,40}$")
 _LOG = logging.getLogger("care")
 # The Relay accepts a ledger reply and then the agent rejects the push, so the reply sits in
 # the case history and never opens a turn. Wait briefly and read it back from history.
-_PULL_TRIES = 3  # Leo: few history reads per turn, or renew/ack hit 422 and the message comes back
-_PULL_PAUSE = 1.0
+# The live Ledger answers hold/commit in 15-20 s (Sat morning): 3 reads gave up after 3 s and the
+# booking stopped at "ledger_timeout". Wait ~20 s, one read per second (not a tight loop: the
+# hospital waits 40 s this way live with renew/ack 200, no 422).
+_PULL_TRIES = 20
+_LIVE_PULL_PAUSE = 1.0
+_PULL_PAUSE = _LIVE_PULL_PAUSE
 _PARTNER_TRIES = 4  # partner replies are slower: one window of about 3 s
 # Needs whose sent offers this process remembers; the oldest is forgotten first.
 _SENT_NEEDS = 4096

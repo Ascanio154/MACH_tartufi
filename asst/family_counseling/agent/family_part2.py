@@ -470,7 +470,7 @@ async def _family_offers(
         slot = fields_of(line)
         sid, doc = slot.get("slot_id", ""), slot.get("doctor_id", "")
         at = _when(slot.get("at", slot.get("agenda_date", "")))
-        if (not sid or not doc or at is None or at <= now or sid in dropped
+        if (not sid or not doc or at is None or at <= now + _LEAD or sid in dropped
             or slot.get("facility") != city.agent_id or slot.get("procedure") != "CONS-GIN"):
             continue
         free = slot.get("free", "1").lower()

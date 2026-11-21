@@ -106,8 +106,8 @@ async def _family_stop_note(city: City, state: _FamilyCase, citizen: str, reason
             "Un'operazione di prenotazione era già stata inviata. Sto verificando l'esito: non posso ancora dichiarare la prenotazione annullata né iniziarne un'altra.",
             "A booking operation had already been sent. Its outcome is being checked; I cannot say the booking is cancelled or start another one yet."),
         "slot_expired": (
-            "L'orario proposto è ormai passato. Non ho prenotato quel posto; puoi chiedermi nuove disponibilità, senza ricetta.",
-            "The offered time has passed. I have not booked that slot; you can ask me for new availability, without a referral."),
+            "L'orario proposto è ormai passato e non ho prenotato quel posto: ti mando subito le nuove disponibilità, senza ricetta.",
+            "The offered time has passed and I have not booked that slot: I am sending you the new availability right away, without a referral."),
     }
     if reason not in phrases:
         await _family_note(city, state, citizen, reason)
@@ -305,4 +305,7 @@ async def _family_turn(city: City, message: Message, state: _FamilyCase) -> None
         else:
             await _family_stop_note(city, state, citizen, stopped.reason)
             if stopped.reason == "choice_withdrawn" and _family_reoffer_requested(state, citizen):
+                await _family_offers(city, state, citizen, message, refresh=True)
+            elif stopped.reason == "slot_expired":
+                # The citizen asked for a visit: new dates in the same turn, not "ask me again".
                 await _family_offers(city, state, citizen, message, refresh=True)

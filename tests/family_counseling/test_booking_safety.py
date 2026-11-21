@@ -243,17 +243,91 @@ class SilentLedger(LedgerCity):
         return list(self.chat)
 
 
-class FewHistoryReads(unittest.IsolatedAsyncioTestCase):
-    """Leo: many history reads in one turn let the lease expire (renew/ack 422)."""
+class PacedLedgerWaits(unittest.IsolatedAsyncioTestCase):
+    """The live Ledger answers hold/commit in 15-20 s (Sat morning): 3 reads gave up after 3 s
+    ("family.write.stopped reason=ledger_timeout"). Wait ~20 s, one read per second (the
+    hospital waits 40 s this way live with renew/ack 200, no 422)."""
 
-    async def test_waiting_for_a_silent_ledger_reads_history_at_most_three_times(self):
+    async def test_silent_ledger_is_read_at_most_twenty_times(self):
         city = SilentLedger()
         found = await fc._await_line(city, "N-1", [], "held", "slot_id=S-1", op="hold")
         self.assertIsNone(found)
-        self.assertLessEqual(city.reads, 3)
-        city.reads = 0
-        await fc._until(city, "N-1", [], lambda rows: False)
-        self.assertLessEqual(city.reads, 3)
+        self.assertLessEqual(city.reads, 20)
+        self.assertGreaterEqual(fc._PULL_TRIES * max(fc._LIVE_PULL_PAUSE, 0), 15)
+
+    async def test_slow_ledger_hold_still_books(self):
+        class SlowLedger(LedgerCity):
+            """hold/commit answers appear only on the 10th history read after the write."""
+            def __init__(self):
+                super().__init__()
+                self.pending = []
+                self.reads = 0
+            async def say(self, to, text, *, status=None):
+                if to == LEDGER and text.split()[0] in {"hold", "commit"}:
+                    sent = msg(AGENT, text, to)
+                    self.chat.append(sent)
+                    self.pending.append((self.reads + 10, msg(LEDGER, self._answer(text), AGENT)))
+                    return sent.msg_id
+                return await super().say(to, text, status=status)
+            async def history(self, peer=None, *, need_id=None):
+                self.reads += 1
+                for due, row in list(self.pending):
+                    if self.reads >= due:
+                        self.chat.append(row)
+                        self.pending.remove((due, row))
+                return list(self.chat)
+        fc._FAMILY_CASES.clear()
+        city = SlowLedger()
+        await citizen_says(city, "Buongiorno, vorrei un appuntamento al consultorio")
+        offers = [o for text in city.to_citizen() for o in fc._offer_rows(text)]
+        await citizen_says(city, f"confirm offer_id={offers[0]['offer_id']} consent_ref=c-1")
+        self.assertEqual(len(city.to_ledger("commit")), 1)
+        self.assertTrue(any(t.startswith("booking.receipt") for t in city.to_citizen()))
+
+
+class OfferMargin(unittest.IsolatedAsyncioTestCase):
+    """Every message takes ~3.5 real min = 3.5 agenda hours: a slot a few hours ahead is past
+    by the time the confirm arrives. Direct offers keep _LEAD (8 agenda hours) of margin."""
+
+    async def test_slot_three_hours_ahead_is_not_offered(self):
+        class NearSlot(LedgerCity):
+            def _answer(self, text):
+                answer = super()._answer(text)
+                if text.startswith("world"):
+                    answer += (f"\nslot_id=G-0 doctor_id=ASST-1-c1 facility={AGENT} procedure=CONS-GIN "
+                               "at=2026-11-23T11:00:00+01:00 day=mon free=1")
+                return answer
+        fc._FAMILY_CASES.clear()
+        city = NearSlot()
+        await citizen_says(city, "Buongiorno, vorrei un appuntamento al consultorio")
+        offered = {o["slot_id"] for text in city.to_citizen() for o in fc._offer_rows(text)}
+        self.assertTrue(offered)
+        self.assertNotIn("G-0", offered)
+
+    async def test_expired_choice_gets_new_offers_in_the_same_turn(self):
+        class LaterClock(LedgerCity):
+            late = False
+            def _answer(self, text):
+                if text == "agenda" and self.late:
+                    return "agenda agenda_now=2026-11-26T08:00:00+01:00"
+                answer = super()._answer(text)
+                if text.startswith("world"):
+                    answer += (f"\nslot_id=G-9 doctor_id=ASST-1-c1 facility={AGENT} procedure=CONS-GIN "
+                               "at=2026-11-27T11:00:00+01:00 day=fri free=1")
+                return answer
+        fc._FAMILY_CASES.clear()
+        city = LaterClock()
+        await citizen_says(city, "Buongiorno, vorrei un appuntamento al consultorio")
+        offers = [o for text in city.to_citizen() for o in fc._offer_rows(text)]
+        first = offers[0]["offer_id"]
+        city.late = True
+        before = len(city.to_citizen())
+        await citizen_says(city, f"confirm offer_id={first} consent_ref=c-1")
+        after = city.to_citizen()[before:]
+        self.assertEqual(city.to_ledger("hold"), [])
+        self.assertTrue(any("reason=slot_expired" in t for t in after), after)
+        fresh = {o["slot_id"] for t in after for o in fc._offer_rows(t)}
+        self.assertEqual(fresh, {"G-9"}, after)
 
 
 class Level8RedFlags(unittest.IsolatedAsyncioTestCase):
