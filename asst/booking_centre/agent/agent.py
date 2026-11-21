@@ -41,7 +41,9 @@ _LEAD = timedelta(hours=4)
 # Sat night: each message takes ~3.5 real min (= 3.5 agenda hours) and the city clock jumps,
 # so offer -> confirm costs ~7 agenda hours: slots closer than this were refused as "past"
 # (21 of 55 refusals). U keeps the short lead, or nothing is left for today.
-_LEAD_SLOW = timedelta(hours=8)
+# 21/11 11:00: a message now takes ~3 real min per hop, and offer -> confirm -> forward -> hold
+# is four hops: 8 hours were gone before the hold (33 confirms, no receipt).
+_LEAD_SLOW = timedelta(hours=16)
 # Doctor key (the last segment of doctor_id) -> languages, gender, days. ``*`` is the ASST's
 # rare language. The Ledger's slot line names the doctor; it does not repeat this table.
 _DOCTORS: dict[str, tuple[frozenset[str], str, frozenset[str]]] = {
