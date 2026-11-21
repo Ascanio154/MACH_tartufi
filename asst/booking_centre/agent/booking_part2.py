@@ -181,7 +181,10 @@ _USED: set[str] = set()
 # Slot -> (when, need) of our latest offer of it; _SHOWN_FOR seconds of head start for that need.
 _SHOWN: dict[str, tuple[float, str]] = {}
 _SHOWN_FOR = 40.0
-_PARTNER_TRIES = 60  # x _PULL_PAUSE = 15 s for the partners' first offer
+# Procedure -> the world page that held today's slots for the last case: the next case starts
+# there instead of page 1 (one slow Ledger read less). Days only move forward.
+_TODAY_PAGE: dict[str, int] = {}
+_PARTNER_TRIES, _PARTNER_PAUSE = 80, 3.0  # up to 4 minutes for the partners' first offer
 # Citizens whose receipt we forwarded.
 _BOOKED: set[str] = set()
 # (agent, need) pairs we already explained our message format to.

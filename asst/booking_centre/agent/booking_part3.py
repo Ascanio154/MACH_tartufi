@@ -281,8 +281,9 @@ async def _advance_alone(
             return
         if now is None and not _exact(chat, agent, "agenda"):
             await _say(city, LEDGER, "agenda")
-        if world is None and not _asked(chat, agent, procedure, 1):
-            await _say(city, LEDGER, f"world procedure={procedure} page=1")
+        start = _TODAY_PAGE.get(procedure, 1)  # where the last case found today's slots
+        if world is None and not _asked(chat, agent, procedure, start):
+            await _say(city, LEDGER, f"world procedure={procedure} page={start}")
         chat = await _until(
             city,
             message.need_id,
@@ -343,6 +344,8 @@ async def _advance_alone(
             await _say(city, citizen, none)
         return
     if chosen:
+        if not replacing and fixed is None:
+            _TODAY_PAGE[procedure] = _page(world)[0]
         text = _offer_block(_pick(chosen, _days(chat)), number, priority, _lang(chat), _days(chat))
         if await _say(city, citizen, text):
             for offer in _offers_in(text):
@@ -385,9 +388,12 @@ async def _advance_alone(
                     row.sender for row in rows
                     if row.sender in partners and first_word(row.text) == "cancel"}
 
-            # Partners answer in 10-20 s (Bovisa, journeys 116 and 134): wait for a slot with
-            # every preference before falling back to a relaxed one.
-            fresh = await _until(city, message.need_id, chat, answered, tries=_PARTNER_TRIES)
+            # Journeys 190-215: every ASST reads the same slow catalogue, so a partner's slots
+            # come minutes later, after the citizen had refused our out-of-window alternative
+            # and the journey had closed (-1). The citizen waits 16 minutes per message: give
+            # the partners that time before the relaxed fallback.
+            fresh = await _until(city, message.need_id, chat, answered, tries=_PARTNER_TRIES,
+                                 pause=_PARTNER_PAUSE)
             if not any(row.sender in partners and first_word(row.text) == "offer" for row in fresh):
                 await _close_search(city, fresh, agent, citizen, key)
             return

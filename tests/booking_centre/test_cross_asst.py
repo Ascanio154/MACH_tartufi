@@ -647,3 +647,18 @@ class WorldPages(unittest.TestCase):
         self.assertEqual(bc._next_page(self.page(12, 30, 27), now, "B"), 0)   # past the window
         self.assertEqual(bc._next_page(self.page(30, 30, 22), now, "B"), 0)   # last page
         self.assertEqual(bc._next_page(self.page(1, 3, 23), now, "B"), 2)     # nothing to skip
+
+
+class RemembersTodayPage(_Fresh):
+    async def test_next_case_starts_from_the_page_that_had_slots(self) -> None:
+        chat = booking_chat()
+        chat[-1] = msg(bc.LEDGER, chat[-1].text.replace("page=1/1", "page=7/30"), AGENT)
+        chat[-2] = msg(AGENT, "world procedure=VIS-FIS page=7", bc.LEDGER)
+        city = PartnerCity(chat, peers=[])
+        city.inbound = chat[0]
+        await advance(city)
+        self.assertEqual(bc._TODAY_PAGE, {"VIS-FIS": 7})
+        fresh = PartnerCity(booking_chat()[:6], peers=[])   # rx and agenda known, no world yet
+        fresh.inbound = fresh.chat[0]
+        await advance(fresh)
+        self.assertIn("world procedure=VIS-FIS page=7", fresh.sent_to(bc.LEDGER))

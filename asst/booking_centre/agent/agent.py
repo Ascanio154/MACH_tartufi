@@ -654,6 +654,7 @@ async def _until(
     chat: list[Message],
     ready: Callable[[list[Message]], bool],
     tries: int = _PULL_TRIES,
+    pause: float | None = None,
 ) -> list[Message]:
     """Re-read the case until ``ready`` or the short wait ends. The push may never arrive."""
 
@@ -666,7 +667,7 @@ async def _until(
         if ready(fresh):
             return fresh
         if attempt + 1 < tries:
-            await asyncio.sleep(_PULL_PAUSE)
+            await asyncio.sleep(_PULL_PAUSE if pause is None else pause)
     return fresh
 
 
