@@ -201,6 +201,8 @@ async def _family_turn(city: City, message: Message, state: _FamilyCase) -> None
         return
     if message.sender not in (citizen, LEDGER):
         return
+    if message.sender == citizen and _family_head(message) == "cancel":
+        await _family_slot_free(city, state, citizen, message)
     if message.sender == LEDGER and _family_head(message) not in {
         "agenda", "slots", "world", "rules", "held", "committed", "refused", "checked_in"
     }:

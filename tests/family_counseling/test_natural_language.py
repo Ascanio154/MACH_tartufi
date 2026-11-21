@@ -244,6 +244,20 @@ class MoreHumanAndRing(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(catalog[0]["slot_id"], "S31")
         self.assertEqual(catalog[0]["relaxed"], "days")
 
+    async def test_citizen_gives_up_slot_booking_centre_told(self) -> None:
+        city = LedgerCity()
+        await citizen_says(city, "Buongiorno, vorrei un appuntamento al consultorio")
+        offer = next(o for row in city.to_citizen() for o in fc._offer_rows(row))
+        await citizen_says(city, f"cancel offer_id={offer['offer_id']} reason=other")
+        told = [row.text for row in city.chat if row.recipient == fc._OUR_BOOKING_CENTRE]
+        self.assertEqual(len(told), 1)
+        self.assertIn(f"slot_id={offer['slot_id']}", told[0].split())
+        self.assertNotIn("citizen", told[0])
+        self.assertEqual(fc.first_word(told[0]), "notice")
+        await citizen_says(city, f"cancel offer_id={offer['offer_id']} reason=other")
+        told = [row.text for row in city.chat if row.recipient == fc._OUR_BOOKING_CENTRE]
+        self.assertEqual(len(told), 1)  # once per slot
+
 
 if __name__ == "__main__":
     unittest.main()

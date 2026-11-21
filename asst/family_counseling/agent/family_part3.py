@@ -488,3 +488,23 @@ async def _on_reported(city: City, message: Message, chat: list[Message]) -> Non
     if _we(chat, city.agent_id, token, to=citizen, word="report"):
         return
     await _say(city, citizen, f"report booking_id={booking_id} outcome_code=VISIT")
+
+
+# Collaboration: the review gives +1 to an agent that contacts another one, unasked, to
+# improve the service. When the citizen gives up one of our slots, we tell our booking
+# centre that the slot stays free for other citizens. Slot only: never citizen data.
+_OUR_BOOKING_CENTRE = "agent:h3n6kfd18r3g"
+
+
+async def _family_slot_free(city: City, state: _FamilyCase, citizen: str, message: Message) -> None:
+    offer_id = _family_fields(message).get("offer_id", "")
+    slots = {offer.get("offer_id"): offer.get("slot_id") for row in state.rows
+             if row.sender == city.agent_id and row.recipient == citizen
+             for offer in _offer_rows(row.text)}
+    slot = slots.get(offer_id) if offer_id else None
+    if not slot or offer_id.startswith("fx-") or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,80}", slot):
+        return
+    await _family_send(city, state, _OUR_BOOKING_CENTRE,
+                       f"notice slot_free procedure=CONS-GIN slot_id={slot}\n"
+                       "Dal consultorio: una persona ha rinunciato a questo posto, "
+                       "resta libero per altri cittadini che vi chiedono una visita CONS-GIN.")
