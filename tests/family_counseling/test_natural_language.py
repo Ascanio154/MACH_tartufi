@@ -186,6 +186,64 @@ class MoreHumanAndRing(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(holds), 1)
         self.assertIn("consent_ref=cx-9", holds[0].split())
 
+    async def _ring(self, city: LedgerCity, text: str, msg_id: str = "r-9") -> list[str]:
+        ask = Message(type="chat", sender="agent:other-bc", msg_id=msg_id, need_id="N-RING-9",
+                      recipient=AGENT, body={"text": "need.request service_type=family_counseling"
+                                             ".gynecology procedure=CONS-GIN " + text})
+        city.chat.append(ask)
+        await fc._family(city, ask, list(city.chat))
+        return [row.text for row in city.chat if row.recipient == "agent:other-bc"]
+
+    async def test_ring_days_respected_or_relaxed(self) -> None:
+        city = LedgerCity()
+        sent = await self._ring(city, "request_id=rq-d days=tue")
+        offers = [line for line in sent[0].splitlines() if line.startswith("offer ")]
+        self.assertEqual([fc.fields_of(line)["slot_id"] for line in offers], ["G-2"])
+        city = LedgerCity()
+        sent = await self._ring(city, "request_id=rq-t days=thu/fri")
+        lines = sent[0].splitlines()
+        self.assertTrue(lines[0].startswith("cancel request_id=rq-t reason=no_availability"))
+        offers = [line for line in lines if line.startswith("offer ")]
+        self.assertTrue(1 <= len(offers) <= 3)
+        for line in offers:
+            self.assertIn("relaxed=days", line.split())
+
+    async def test_ring_gender_and_window(self) -> None:
+        city = LedgerCity()
+        sent = await self._ring(city, "request_id=rq-g gender_preference=m "
+                                      "after=2026-11-24T00:00:00+01:00")
+        lines = sent[0].splitlines()
+        self.assertTrue(lines[0].startswith("cancel "))
+        relaxed = {fc.fields_of(line)["slot_id"]: fc.fields_of(line)["relaxed"]
+                   for line in lines if line.startswith("offer ")}
+        self.assertEqual(relaxed.get("G-2"), "gender_preference")
+        self.assertNotIn("G-1", relaxed)  # breaks two criteria: never offered
+
+    async def test_ring_same_request_same_answer(self) -> None:
+        city = LedgerCity()
+        await self._ring(city, "request_id=rq-r", msg_id="r-10")
+        sent = await self._ring(city, "request_id=rq-r", msg_id="r-11")
+        self.assertEqual(len(sent), 2)
+        self.assertEqual(sent[0], sent[1])
+        sent = await self._ring(city, "request_id=rq-r", msg_id="r-11")
+        self.assertEqual(len(sent), 2)  # the same message again: no third answer
+
+    def test_partner_cancel_with_relaxed_offers_is_read_line_by_line(self) -> None:
+        state = fc._FamilyCase()
+        state.rows = [
+            msg(AGENT, "need.request service_type=family_counseling.gynecology procedure=CONS-GIN "
+                       "request_id=rq-x", "agent:p1"),
+            Message(type="chat", sender="agent:p1", msg_id="p-1", need_id=NEED, recipient=AGENT,
+                    body={"text": "cancel request_id=rq-x reason=no_availability\n"
+                                  "offer offer_id=of-S31 slot_id=S31 doctor_id=asst-x-h1 facility=agent:p1 "
+                                  "procedure=CONS-GIN agenda_date=2026-11-26T11:00:00+01:00 "
+                                  "request_id=rq-x relaxed=days\nGiovedì invece di martedì"}),
+        ]
+        catalog = list(fc._family_cross_catalog(state, AGENT).values())
+        self.assertEqual(len(catalog), 1)
+        self.assertEqual(catalog[0]["slot_id"], "S31")
+        self.assertEqual(catalog[0]["relaxed"], "days")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -549,14 +549,19 @@ def _family_cross_catalog(state: _FamilyCase, agent: str) -> dict[str, dict[str,
             continue
         if state.rows.index(row) <= state.rows.index(targets[row.sender]):
             continue
-        if _family_head(row) == "cancel":
-            fields = _family_fields(row)
+        # MACH-1.2: one message may hold a cancel line AND relaxed offer lines under it.
+        # Read each line on its own: the first word of the whole text is not enough.
+        lines = row.text.splitlines() or [row.text]
+        for line in lines:
+            if first_word(line) != "cancel":
+                continue
+            fields = fields_of(line)
             offers = {key: value for key, value in offers.items()
                       if not (value["facility"] == row.sender
                               and fields.get("offer_id", value["partner_offer_id"]) == value["partner_offer_id"]
                               and fields.get("slot_id", value["slot_id"]) == value["slot_id"])}
-            continue
-        for fields in _offer_rows(row.text):
+        rest = "\n".join(line for line in lines if first_word(line) != "cancel").strip()
+        for fields in _offer_rows(rest):
             if (fields.get("request_id", _family_fields(targets[row.sender]).get("request_id"))
                 != _family_fields(targets[row.sender]).get("request_id")):
                 continue
@@ -577,7 +582,8 @@ def _family_cross_catalog(state: _FamilyCase, agent: str) -> dict[str, dict[str,
             offer_id = "fx-" + _family_cross_hash(row.sender + "|" + fields["offer_id"] + "|" + fields["slot_id"])
             offers[offer_id] = {"offer_id": offer_id, "partner_offer_id": fields["offer_id"],
                                 "slot_id": fields["slot_id"], "doctor_id": fields["doctor_id"],
-                                "facility": row.sender, "procedure": "CONS-GIN", "at": at.isoformat(), "day": day}
+                                "facility": row.sender, "procedure": "CONS-GIN", "at": at.isoformat(), "day": day,
+                                "relaxed": fields.get("relaxed", "")}
     cancelled = {_family_fields(row).get("offer_id") for row in state.rows
                  if row.sender == agent and _family_head(row) == "cancel"}
     return {key: offer for key, offer in offers.items() if key not in cancelled}
@@ -606,10 +612,18 @@ async def _family_cross_search(
             found, reason = [], "index_unavailable"
         peers = {peer.agent_id: peer for peer in found
                  if peer.agent_id != city.agent_id and _FAMILY_CAPABILITY in peer.capabilities}
+        # MACH-1.2 search criteria (days, doctor gender, a rare language): never citizen,
+        # prescription, address or profile.
+        wanted = _family_preferences(state.rows, citizen)
+        criteria = "".join(
+            f" {name}={value}" for name, value in (
+                ("days", "/".join(sorted(_family_days(wanted.get("days", ""))))),
+                ("gender_preference", wanted.get("gender_preference", wanted.get("gender", ""))[:1]),
+                ("lang", wanted.get("lang", "") if wanted.get("lang") not in (None, "it", "en") else ""))
+            if value and re.fullmatch(r"[a-z/]+", value))
         for target in sorted(peers)[:_FAMILY_MAX_PARTNERS]:
-            # Public criteria only: never citizen, prescription, address, language or profile.
             query = (f"need.request service_type={_FAMILY_CAPABILITY} procedure=CONS-GIN "
-                     f"request_id=rq-{key.split(':', 1)[1]}")
+                     f"request_id=rq-{key.split(':', 1)[1]}{criteria}")
             if await _family_send(city, state, target, query) is not None:
                 reason = "partners_queried"
         await _family_send(city, state, LEDGER, f"remember key={key} value={reason}")
@@ -644,7 +658,8 @@ async def _family_cross_search(
     days = _family_days(prefs.get("days", ""))
     offers = [offer for offer in _family_cross_catalog(state, city.agent_id).values()
               if _when(offer["at"]) > now]
-    offers.sort(key=lambda offer: (bool(days) and offer["day"] not in days, offer["at"], offer["offer_id"]))
+    offers.sort(key=lambda offer: (bool(offer.get("relaxed")), bool(days) and offer["day"] not in days,
+                                   offer["at"], offer["offer_id"]))
     if offers:
         phrase = ("These appointments are at another facility. I will ask your permission before sharing booking details."
                   if prefs.get("lang") == "en" else
@@ -655,6 +670,11 @@ async def _family_cross_search(
             if len("\n".join([*batch, line, phrase])) > 2000:
                 break
             batch.append(line)
+        if any(offer.get("relaxed") for offer in offers[:len(batch)]):
+            # Never pass relaxed= to the citizen: say in words what changes and ask.
+            phrase += (" Some of them change one of your wishes (day, time or doctor): tell me if that is fine."
+                       if prefs.get("lang") == "en" else
+                       " Alcune cambiano una delle tue preferenze (giorno, orario o medico): dimmi se ti va bene.")
         if batch:
             await _family_send(city, state, citizen, "\n".join([*batch, phrase]))
         else:

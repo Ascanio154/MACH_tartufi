@@ -182,16 +182,26 @@ async def _facility(
 
 
 async def _answer_ring(city: City, message: Message, chat: list[Message]) -> None:
-    """MACH-1: another ASST asks for our consultorio slots. Criteria in, ONE message out.
+    """MACH-1.2: another ASST asks for our consultorio slots. Criteria in, ONE message out.
 
     The request carries no citizen data and we ask for none; offers only name our own slots.
+    Every criterion it names is honoured (lang, gender_preference, days, after, before,
+    deadline). When nothing fits them all, a cancel line then up to 3 offers that break one
+    criterion each, marked relaxed=<key>. The same request_id twice gets the same lines.
     """
 
     agent, partner = city.agent_id, message.sender
     fields = fields_of(message.text)
     token = f"request_id={fields.get('request_id', message.msg_id)}"
-    if _we(chat, agent, token, to=partner, word="offer") or _we(
-            chat, agent, token, to=partner, word="cancel"):
+    replies = [row for row in chat if row.sender == agent and row.recipient == partner
+               and token in row.text.split() and words(row.text) & {"offer", "cancel"}]
+    if replies:
+        # Idempotency: one answer per request we received, always the same lines.
+        asks = {row.msg_id for row in chat if row.sender == partner
+                and token in row.text.split() and "need.request" in words(row.text)}
+        asks.add(message.msg_id)
+        if len(replies) < len(asks):
+            await _say(city, partner, replies[0].text)
         return
     if not _exact(chat, agent, "agenda"):
         await _say(city, LEDGER, "agenda")
@@ -204,21 +214,63 @@ async def _answer_ring(city: City, message: Message, chat: list[Message]) -> Non
     if now is None or world is None:
         await _say(city, partner, f"cancel {token} reason=facility_unavailable")
         return
-    slots = fitting([line for line in world.splitlines() if "slot_id=" in line], now=now,
-                    priority=fields.get("priority"), lang="it", facility=agent,
-                    procedure="CONS-GIN")[:3]
-    if not slots:
-        await _say(city, partner, f"cancel {token} reason=no_availability")
-        return
-    lines = []
+    deadline = _when(fields.get("deadline", ""))
+    slots = [slot for slot in fitting(
+        [line for line in world.splitlines() if "slot_id=" in line], now=now,
+        priority=fields.get("priority"), lang=fields.get("lang", "it").lower(), facility=agent,
+        procedure="CONS-GIN") if deadline is None or _when(slot["at"]) <= deadline]
+    exact, relaxed = [], []
     for slot in slots:
-        spec = _DOCTORS.get(slot["doctor_id"].rsplit("-", 1)[-1])
-        extra = "" if spec is None else (
-            f" doctor_lang={'/'.join(sorted(spec[0] - {'*'}))} doctor_gender={spec[1]}")
-        lines.append(f"offer offer_id=p-{slot['slot_id']} slot_id={slot['slot_id']} "
-                     f"doctor_id={slot['doctor_id']} facility={agent} procedure=CONS-GIN "
-                     f"agenda_date={slot['at']} agenda_day={slot.get('day', '')}{extra} {token}")
+        broken = _ring_broken(slot, fields)
+        if not broken:
+            exact.append(slot)
+        elif len(broken) == 1:
+            relaxed.append((slot, broken[0]))
+    if exact:
+        await _say(city, partner, "\n".join(_ring_line(slot, agent, token) for slot in exact[:3]))
+        return
+    lines = [f"cancel {token} reason=no_availability"]
+    seen: set[str] = set()
+    for slot, key in relaxed:
+        # Prefer variety: the nearest slot for each relaxed criterion first.
+        if key not in seen and len(lines) < 4:
+            seen.add(key)
+            lines.append(_ring_line(slot, agent, token) + f" relaxed={key}")
+    for slot, key in relaxed:
+        line = _ring_line(slot, agent, token) + f" relaxed={key}"
+        if len(lines) < 4 and line not in lines:
+            lines.append(line)
+    if len(lines) > 1:
+        lines.append("Con tutti i criteri non c'è posto: queste sono le alternative più vicine, "
+                     "ognuna cambia un solo criterio.")
     await _say(city, partner, "\n".join(lines))
+
+
+def _ring_broken(slot: dict[str, str], fields: dict[str, str]) -> list[str]:
+    """Which of the request's soft criteria this slot does not meet."""
+
+    broken: list[str] = []
+    spec = _DOCTORS.get(slot["doctor_id"].rsplit("-", 1)[-1])
+    gender = fields.get("gender_preference", fields.get("gender", "")).lower()[:1]
+    if gender in ("f", "m") and (spec is None or spec[1] != gender):
+        broken.append("gender_preference")
+    days = _family_days(fields.get("days", ""))
+    if days and slot.get("day", "") not in days:
+        broken.append("days")
+    at = _when(slot["at"])
+    after, before = _when(fields.get("after", "")), _when(fields.get("before", ""))
+    if at is not None and ((after is not None and at < after) or (before is not None and at > before)):
+        broken.append("after" if after is not None and at < after else "before")
+    return broken
+
+
+def _ring_line(slot: dict[str, str], agent: str, token: str) -> str:
+    spec = _DOCTORS.get(slot["doctor_id"].rsplit("-", 1)[-1])
+    extra = "" if spec is None else (
+        f" doctor_lang={'/'.join(sorted(spec[0] - {'*'}))} doctor_gender={spec[1]}")
+    return (f"offer offer_id=p-{slot['slot_id']} slot_id={slot['slot_id']} "
+            f"doctor_id={slot['doctor_id']} facility={agent} procedure=CONS-GIN "
+            f"agenda_date={slot['at']} agenda_day={slot.get('day', '')}{extra} {token}")
 
 
 def _booking_of(chat: list[Message], agent: str, slot_id: str) -> tuple[str, str, str | None]:
