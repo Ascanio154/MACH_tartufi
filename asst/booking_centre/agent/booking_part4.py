@@ -475,6 +475,25 @@ def _agenda_guess() -> datetime | None:
     return guess + timedelta(days=2) if guess.weekday() >= 5 else guess
 
 
+# Sat 21/11 15:00: Ledger answers reach us 15-75 real minutes old, so the agenda in them is up to
+# 3 agenda days behind and offers came out already past (same finding as the consultorio, 5caa5eb).
+# The agenda runs 60x the real clock: one reading of the public scoreboard gives the offset
+# (checked at 14:42 UTC: within 2 agenda minutes). It only moves "now" forward, and only within
+# 5 agenda days of the Ledger's clock, so a city pause or another epoch falls back to the Ledger.
+_WALL_REAL = datetime.fromisoformat("2026-11-21T14:10:02.700+00:00")
+_WALL_AGENDA = datetime.fromisoformat("2027-01-06T06:49:59.559+00:00")
+
+
+def _wall_agenda(now: datetime, real: datetime | None = None) -> datetime:
+    """``now`` moved forward to the agenda time the real clock implies, when they are close."""
+
+    real = real or datetime.now(timezone.utc)
+    wall = _WALL_AGENDA + 60 * (real - _WALL_REAL)
+    if now.tzinfo is None:
+        return now
+    return wall if timedelta(0) < wall - now < timedelta(days=5) else now
+
+
 def _agenda_stale() -> bool:
     """True when the next case should ask the Ledger again (the answer is not waited for)."""
 
@@ -497,6 +516,9 @@ def _cached(rows: list[Message]) -> list[Message]:
     # The computed time goes last, so it is the one every later read of the agenda finds.
     guess = _agenda_guess()
     seen = _when((_ledger(rows, "agenda") or {}).get("agenda_now", ""))
+    base = guess if guess is not None else seen
+    if base is not None and _wall_agenda(base) > base:
+        guess = _wall_agenda(base)
     if guess is not None and (seen is None or guess > seen):
         texts.append("agenda agenda_now=" + guess.isoformat())
     procedure = (_ledger(rows, "prescription") or {}).get("procedure", "")

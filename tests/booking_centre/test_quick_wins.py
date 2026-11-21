@@ -487,3 +487,31 @@ class RememberedPageOutOfRange(unittest.IsolatedAsyncioTestCase):
         now = datetime.fromisoformat(NOW)
         self.assertEqual(bc._next_page("slots procedure=VIS-FIS page=3/1\n", now, "D", frozenset({3})), 1)
         self.assertEqual(bc._next_page("slots procedure=VIS-FIS page=5/4\n", now, "D", frozenset({5})), 4)
+
+
+class WallClockAgenda(unittest.TestCase):
+    """Sat 21/11 15:00: Ledger answers reach us 15-75 real minutes old, so the agenda in them is
+    up to 3 agenda days behind and offers came out already past. 'Now' moves forward to the
+    real-clock agenda (calibrated on the public scoreboard) when the two are within 5 days."""
+
+    def test_stale_ledger_clock_moves_forward_and_other_epochs_stay(self) -> None:
+        from datetime import timedelta
+        real = bc._WALL_REAL + timedelta(minutes=10)           # 10 real min = 10 agenda hours
+        wall = bc._WALL_AGENDA + timedelta(hours=10)
+        self.assertEqual(bc._wall_agenda(wall - timedelta(hours=74), real), wall)
+        ahead = wall + timedelta(hours=1)
+        self.assertEqual(bc._wall_agenda(ahead, real), ahead)  # never moves backwards
+        from datetime import datetime
+        other = datetime.fromisoformat(NOW)                    # the tests' own epoch
+        self.assertEqual(bc._wall_agenda(other, real), other)
+
+    def test_cached_case_gets_the_wall_clock_agenda(self) -> None:
+        from datetime import datetime, timedelta, timezone
+        reset_memory()
+        stale = bc._WALL_AGENDA - timedelta(days=2)
+        real = datetime.now(timezone.utc)
+        rows = [msg(LEDGER, f"agenda agenda_now={stale.isoformat()}", AGENT)]
+        rows = bc._cached(rows)
+        last = bc._ledger(rows, "agenda")
+        now = bc._when(last.get("agenda_now", ""))
+        self.assertGreater(now, stale + timedelta(days=1), "the stale Ledger clock moved forward")
