@@ -17,6 +17,7 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
         await _escalate(city, message, chat, agent)
         return
     code = _symptom(message)
+    classified = False
     if code is None:
         if _renewal_number(message, chat, agent):
             await _renew(city, chat, agent, message.need_id, message.msg_id)
@@ -25,6 +26,7 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
             return  # a thank-you after the prescription or the escalation: nothing to do
         # Free text the keywords miss: the model picks a row of the table, or a red flag.
         code = await _classify(city, message.text)
+        classified = True
         if code == "RED_FLAG":
             await _escalate(city, message, chat, agent)
             return
@@ -44,6 +46,7 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
         priority,
         said=message.text,
         extra=f"symptom_code={code} ",
+        model=not classified,
     )
 
 
@@ -143,8 +146,13 @@ async def _issue(
     said: str,
     extra: str = "",
     renewed: bool = False,
+    model: bool = True,
 ) -> None:
-    """Write the prescription to the Ledger, then tell the citizen, once each."""
+    """Write the prescription to the Ledger, then tell the citizen, once each.
+
+    ``model=False``: the classifier already spent this turn's model call, so the closing
+    sentence is the standard one and the turn stays short.
+    """
 
     token = f"prescription_number={number}"
     if number in _WRITING:
@@ -163,7 +171,8 @@ async def _issue(
                 return
         if _we(chat, agent, token, to=citizen, word="prescription"):
             return
-        note = await _kind(city, said, procedure, priority, renewed)
+        note = (await _kind(city, said, procedure, priority, renewed) if model
+                else _rx_note(procedure, priority, renewed, english=_english(said)))
         # The model can take seconds: another turn may have answered this case meanwhile.
         try:
             fresh = await city.history(need_id=need_id)
