@@ -337,7 +337,9 @@ async def _on_confirm(
     agent = city.agent_id
     fields = fields_of(message.text)
     offer_id = fields.get("offer_id", "")
-    consent = fields.get("consent_ref", "")
+    # Rule P2 (live Sat 12:47): a partner ASST sends the P2 consent as cross_asst_consent_ref
+    # (MACH-1.3: it wins over the booking consent_ref); the Ledger refuses the hold without it.
+    consent = fields.get("cross_asst_consent_ref") or fields.get("consent_ref", "")
     offer = _our_offer(chat, agent, offer_id) if offer_id else {}
     slot = fields.get("slot_id") or offer.get("slot_id", "")
     facility = fields.get("facility") or offer.get("facility", "")

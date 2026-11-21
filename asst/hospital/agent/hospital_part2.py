@@ -355,7 +355,7 @@ def _booking_of(chat: list[Message], agent: str, slot_id: str) -> tuple[str, str
         fields = fields_of(row.text)
         if "confirm" in words(row.text) and row.sender not in (LEDGER, agent):
             sender = row.sender
-            consent = fields.get("consent_ref", consent)
+            consent = fields.get("cross_asst_consent_ref") or fields.get("consent_ref", consent)
             number = fields.get("prescription_number") or number
         if row.sender == agent and "hold" in words(row.text):
             consent = fields.get("consent_ref", consent)
