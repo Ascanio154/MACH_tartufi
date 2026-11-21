@@ -480,6 +480,12 @@ async def _facility(
 ) -> None:
     head = first_word(message.text)
     kind = words(message.text)
+    if message.sender.startswith("citizen:") and _facility_red_flag(message):
+        await _escalate_here(city, message, chat)
+        return
+    if message.sender.startswith("citizen:") and _impostor_checkin(message, chat, city.agent_id):
+        await _refuse_impostor(city, message, chat)
+        return
     if message.sender == LEDGER and head == "held":
         await _on_held(city, message, chat)
     elif message.sender == LEDGER and head == "committed":

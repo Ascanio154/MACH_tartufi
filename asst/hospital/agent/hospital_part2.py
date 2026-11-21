@@ -12,6 +12,12 @@ async def _facility(
 ) -> None:
     head = first_word(message.text)
     kind = words(message.text)
+    if message.sender.startswith("citizen:") and _facility_red_flag(message):
+        await _escalate_here(city, message, chat)
+        return
+    if message.sender.startswith("citizen:") and _impostor_checkin(message, chat, city.agent_id):
+        await _refuse_impostor(city, message, chat)
+        return
     if message.sender == LEDGER and head == "held":
         await _on_held(city, message, chat)
     elif message.sender == LEDGER and head == "committed":
@@ -646,3 +652,83 @@ def _checkin_words(city: City, chat: list[Message], citizen: str) -> str:
         "pronto. Dopo la visita il medico le spiega i passi successivi. Se ha bisogno di "
         "assistenza per l'accesso, lo dica pure al personale."
     )
+
+
+# --- level 8: red flags and impostors at the facility ------------------------------------------
+# A red flag the citizen tells the facility (chest pain, legs that give way, stroke...) is
+# escalated at once: no visit talk, no advice. Same patterns as the booking centre.
+_FAC_CHEST = r"\b(petto|torace|sterno|chest)\b"
+_FAC_CHEST_BAD = (
+    r"\b(dolor|male?\b|peso\b|pesante|oppress|opprim|stringe|stretta|schiacci|brucia|"
+    r"fitt[ae]\b|morsa|costri|pain|hurt|ach(e|es|ing)\b|tight|pressure|crush|heavy|squeez)"
+)
+_FAC_LEGS = r"\b(gamb[ae]|legs?)\b"
+_FAC_LEGS_BAD = (
+    r"\b(forza|debol|non (le )?sento|non riesco a muover|non si muov|cedono|paralizz|"
+    r"intorpidit|insensibil|strength|weak|numb|can'?t (feel|move)|cannot (feel|move)|paraly)"
+)
+_FAC_RED_FLAG_RE = tuple(
+    re.compile(rf"{a}.{{0,40}}{b}|{b}.{{0,40}}{a}", re.DOTALL)
+    for a, b in ((_FAC_CHEST, _FAC_CHEST_BAD), (_FAC_LEGS, _FAC_LEGS_BAD))
+) + (
+    re.compile(r"\binfarto\b|heart attack|\bictus\b|\bstroke\b|non riesco a respirare|can'?t breathe"),
+)
+
+
+def _facility_red_flag(message: Message) -> bool:
+    if understood(message).body.get("is_emergency") is True:
+        return True
+    lowered = (message.text or "").lower()
+    return any(flag in lowered for flag in _RED_FLAGS) or any(
+        pattern.search(lowered) for pattern in _FAC_RED_FLAG_RE
+    )
+
+
+async def _escalate_here(city: City, message: Message, chat: list[Message]) -> None:
+    citizen = message.sender
+    if _we(chat, city.agent_id, "escalate.emergency", to=citizen, word="escalate.emergency"):
+        return
+    if _citizen_lang(chat, citizen) == "en":
+        words_ = "This is an emergency: call 112 now. Please do not wait for the visit."
+    else:
+        words_ = "Questa è un'emergenza: chiami subito il 112. Non aspetti la visita."
+    await _say(city, citizen, f"escalate.emergency reason=red_flag {words_}")
+
+
+def _booking_owner(chat: list[Message], agent: str) -> str:
+    """The citizen named in the confirm or hold of this case, if any."""
+
+    for row in chat:
+        if row.sender == LEDGER:
+            continue
+        if "confirm" in words(row.text) or (row.sender == agent and first_word(row.text) == "hold"):
+            owner = fields_of(row.text).get("citizen", "")
+            if owner.startswith("citizen:"):
+                return owner
+    return ""
+
+
+def _impostor_checkin(message: Message, chat: list[Message], agent: str) -> bool:
+    """A check-in for a booking that this case books for another citizen."""
+
+    if not _checkin_booking(message, chat, agent):
+        return False
+    owner = _booking_owner(chat, agent)
+    return bool(owner) and owner != message.sender
+
+
+async def _refuse_impostor(city: City, message: Message, chat: list[Message]) -> None:
+    citizen = message.sender
+    if any(row.sender == city.agent_id and row.recipient == citizen and "sportello" in row.text for row in chat):
+        return
+    if _citizen_lang(chat, citizen) == "en":
+        words_ = (
+            "I cannot register this arrival: the booking is not in your name. Please come to "
+            "the front desk with your own booking receipt."
+        )
+    else:
+        words_ = (
+            "Non posso registrare questo arrivo: la prenotazione non risulta a suo nome. Si "
+            "rivolga allo sportello con la sua ricevuta di prenotazione."
+        )
+    await _say(city, citizen, words_)
