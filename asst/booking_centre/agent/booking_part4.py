@@ -68,6 +68,7 @@ async def _partner_cancel(
         marks = _sent(key).offers
         marks.add(f"bad-doc:{mark}" if f"lost:{mark}" in marks else f"lost:{mark}")
     mark = (citizen or "", offer_id)
+    promised = False
     if (
         citizen
         and mark not in _CANCELS_SENT
@@ -76,6 +77,7 @@ async def _partner_cancel(
         _CANCELS_SENT.add(mark)
         sentence = "" if expired else _phrase("refused", _lang(chat))
         await _say(city, citizen, f"cancel offer_id={offer_id} reason={reason} {sentence}".rstrip())
+        promised = not expired
     if expired:
         number = _our_offer(chat, city.agent_id, offer_id).get("prescription_number") or _number(chat)
         if citizen and number:
@@ -88,7 +90,17 @@ async def _partner_cancel(
         # ask the partners we have not asked yet instead of closing the path.
         await _partner_retry(city, message, chat, citizen, key)
         return
-    await _advance(city, message, chat, fixed=fixed, replacing=True)
+    # 21/11, 10 journeys: "le propongo subito altre date", then not a word until the verdict
+    # (the search can end silently, e.g. a Ledger page that does not come back in the turn).
+    # The cancel we just sent promised new dates: an alternative or an honest sentence follows.
+    said = [False]
+    flag = _REPLIED.set(said)
+    try:
+        await _advance(city, message, chat, fixed=fixed, replacing=True)
+        if promised and fixed is None and not said[0]:
+            await _close_search(city, chat, city.agent_id, citizen, key)
+    finally:
+        _REPLIED.reset(flag)
 
 
 async def _partner_retry(

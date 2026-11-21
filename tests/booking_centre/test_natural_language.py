@@ -500,6 +500,28 @@ class LogReport2343(_Fresh):
         self.assertTrue(last)
         self.assertFalse(last & {"S-1", "S-2"})
 
+    async def test_cancel_that_promises_new_dates_is_never_the_last_word(self) -> None:
+        # 21/11: the facility's refusal came 12 minutes later, we said "le propongo subito
+        # altre date" and the search then ended without a word (10 journeys, no_booking).
+        chat = booking_chat(slots=DEFAULT_SLOTS[:5])
+        city = PartnerCity(chat)
+        await desk(city, chat[0])
+        await desk(city, msg(CIT, "confirm offer_id=of-S-3 consent_ref=cons-1", AGENT))
+
+        async def silent(*args, **kwargs):  # e.g. the next Ledger page never comes back
+            return None
+
+        self.addCleanup(setattr, bc, "_advance", bc._advance)
+        bc._advance = silent
+        await desk(city, msg(HOSP, "cancel offer_id=of-S-3 reason=ledger.expired", AGENT))
+        texts = to_citizen(city)
+        self.assertEqual(len([t for t in texts if t.startswith("cancel ")]), 1)
+        self.assertFalse(texts[-1].startswith("cancel "), texts[-1])
+        self.assertTrue(bc._offers_in(texts[-1]), texts[-1])
+        # The same cancel delivered again adds nothing.
+        await desk(city, msg(HOSP, "cancel offer_id=of-S-3 reason=ledger.expired", AGENT))
+        self.assertEqual(to_citizen(city), texts)
+
     async def test_same_cancel_twice_told_once(self) -> None:
         chat = booking_chat(slots=DEFAULT_SLOTS[:5])
         city = PartnerCity(chat)
