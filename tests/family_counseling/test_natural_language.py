@@ -345,3 +345,10 @@ class Level7Contention(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LeadAndLanguage(unittest.TestCase):
+    def test_lang_token_wins_over_language_named_in_text(self):
+        rows = [msg(CIT, "need.request procedure=CONS-GIN lang=ro", AGENT),
+                msg(CIT, "I would prefer someone who speaks English please", AGENT)]
+        self.assertEqual(fc._family_preferences(rows, CIT)["lang"], "ro")

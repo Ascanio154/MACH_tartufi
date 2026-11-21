@@ -375,12 +375,19 @@ def _family_days(value: str) -> set[str]:
 
 def _family_preferences(rows: list[Message], citizen: str) -> dict[str, str]:
     prefs: dict[str, str] = {}
+    token_lang = ""
     for row in rows:
         if row.sender == citizen:
-            fields = {**_fc_plain_prefs(row.text), **_family_fields(row)}
+            tokens = _family_fields(row)
+            fields = {**_fc_plain_prefs(row.text), **tokens}
             for key in ("lang", "days", "gender", "gender_preference"):
                 if key in fields:
                     prefs[key] = fields[key].lower()
+            if tokens.get("lang"):
+                token_lang = tokens["lang"].lower()
+    if token_lang:
+        # The lang= token wins over a language named in the text ("English" with lang=ro).
+        prefs["lang"] = token_lang
     if "lang" not in prefs:
         first = next((row.text for row in rows if row.sender == citizen), "")
         if first:
