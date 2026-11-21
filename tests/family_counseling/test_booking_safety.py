@@ -500,3 +500,25 @@ class ParallelLedgerAsks(unittest.IsolatedAsyncioTestCase):
         self.assertIn("agenda", asked)
         self.assertIn("world", asked)
         self.assertLess(asked.index("world"), len(asked))
+
+
+class ArrivalWordsWithoutBooking(unittest.IsolatedAsyncioTestCase):
+    """Sat 21/11 (000376): "eccomi" / "sono qui" opened a booking request, the consultorio read
+    it as a check-in with no booking, answered checkin_pending and never offered a slot."""
+
+    async def test_eccomi_without_a_booking_gets_offers(self):
+        fc._FAMILY_CASES.clear()
+        city = LedgerCity()
+        await citizen_says(city, "Sigh, eccomi di nuovo qui. Vorrei prenotare una visita al consultorio.")
+        said = city.to_citizen()
+        self.assertFalse(any("checkin_pending" in t for t in said), said)
+        self.assertTrue([o for t in said for o in fc._offer_rows(t)], said)
+
+    async def test_arrival_after_a_receipt_is_still_a_checkin(self):
+        fc._FAMILY_CASES.clear()
+        city = LedgerCity()
+        await citizen_says(city, "Buongiorno, vorrei un appuntamento al consultorio")
+        offers = [o for t in city.to_citizen() for o in fc._offer_rows(t)]
+        await citizen_says(city, f"confirm offer_id={offers[0]['offer_id']} consent_ref=c-1")
+        await citizen_says(city, "Eccomi, sono arrivata!")
+        self.assertEqual(len(city.to_ledger("checkin")), 1)

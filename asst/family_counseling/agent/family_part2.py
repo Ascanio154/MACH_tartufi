@@ -213,6 +213,16 @@ async def _family_turn(city: City, message: Message, state: _FamilyCase) -> None
         return
     checkin = next((row for row in reversed(state.rows)
                     if row.sender == citizen and _family_head(row) == "checkin"), None)
+    # "Eccomi" / "sono qui" also open plain booking requests (Sat 21/11, 000376): an arrival
+    # needs a booking in this case, else the message goes on as a request for a visit.
+    booked = any(
+        (row.sender == city.agent_id and row.recipient == citizen
+         and first_word(row.text) == "booking.receipt")
+        or (row.sender == LEDGER and _family_head(row) == "committed")
+        for row in state.rows
+    )
+    if checkin is not None and not booked and not _family_fields(checkin).get("booking_id"):
+        checkin = None
     if checkin is not None:
         await _family_checkin(city, state, citizen, checkin)
         return
