@@ -179,7 +179,18 @@ class Sentence(unittest.TestCase):
     def test_model_waits_stay_short(self):
         # Journeys: the GP answered after 2-3 minutes and slots expired (reason=past).
         self.assertLessEqual(gp._KIND_WAIT, 3.0)
-        self.assertLessEqual(gp._CLASSIFY_WAIT, 8.0)
+        self.assertLessEqual(gp._CLASSIFY_WAIT, 4.0)
+
+    def test_classified_case_makes_one_model_call(self):
+        # A turn must stay short (the city's hold on a message lasts a few seconds): when the
+        # classifier already used the model, the closing sentence is the standard one.
+        city = FakeCity(llm=labeller("SYM-KNEE"))
+        turn(city, CIT, "da quando gioco a padel mi si blocca la gamba all'altezza della rotella")
+        (said,) = to(city, CIT)
+        self.assertEqual(understood(msg(AGENT, said)).type, "prescription")
+        self.assertEqual(city.llm_calls, 1)
+        self.assertTrue(said.endswith(gp._rx_note("VIS-FIS", "D")), said)
+        self.assertIn(gp._COLLAB_IT, said)
 
     def test_slow_classifier_asks_instead_of_waiting(self):
         old, gp._CLASSIFY_WAIT = gp._CLASSIFY_WAIT, 0.05

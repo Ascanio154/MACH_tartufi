@@ -104,7 +104,7 @@ _DEADLINE_DAYS = {"B": 2, "D": 5}
 # Model calls sit on the citizen's path: a congested city made the GP answer after 2-3 minutes
 # and slots expired (reason=past). Short waits, then the standard sentence / ask again.
 _KIND_WAIT = 3.0  # the closing sentence: optional, the prescription is not
-_CLASSIFY_WAIT = 8.0  # free text the keywords miss
+_CLASSIFY_WAIT = 4.0  # free text the keywords miss; one model call per turn at most
 # The LAST act word in a text is read as the act, so the sentence must not hold one. Words
 # that only start like an act ("offered", "reports", "consenso") are refused too: the city's
 # own reader is not ours and may count them.
