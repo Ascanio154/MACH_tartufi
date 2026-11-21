@@ -445,7 +445,12 @@ async def _advance_alone(
             # for the citizen's next message.
             fresh = await _until(city, message.need_id, chat, answered, _SHORT_TRIES)
             if not any(row.sender in partners and first_word(row.text) == "offer" for row in fresh):
-                await _close_search(city, fresh, agent, citizen, key, late=answered(fresh))
+                # 21/11 15:40: partners stay silent for the rest of the journey and the citizen
+                # does not write again: 4 of 10 verdicts ended on "sto chiedendo alle ASST
+                # vicine" (-1 no_alternative / no_booking). When we hold real slots past the
+                # window, offer them now; the honest "nobody has a slot" still waits.
+                late = answered(fresh) or bool(_relaxed_block(fresh, agent, True, key))
+                await _close_search(city, fresh, agent, citizen, key, late=late)
             return
         # The citizen writes again and no partner slot reached them: say so, not silence.
         if (message.sender.startswith("citizen:") or replacing) and not _partner_offered(key, number):

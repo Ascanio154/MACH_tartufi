@@ -491,9 +491,8 @@ class Level4Live(_Fresh):
     async def test_no_slot_in_window_offers_the_first_real_one_later(self) -> None:
         late = [slot("S-LATE", "h1", "2026-12-01T09:00:00+01:00", "tue")]
         city = PartnerCity(booking_chat(slots=late), peers=peers())
+        # Partners are silent and the citizen does not write again: the alternative goes out now.
         await advance(city)
-        self.assertEqual([o for t in city.sent_to(CIT) for o in bc._offers_in(t)], [])
-        await citizen_says(city, f"need.request prescription_number={RX} lang=it ci siete?")
         last = city.sent_to(CIT)[-1]
         self.assertEqual([o["slot_id"] for o in bc._offers_in(last)], ["S-LATE"])
         self.assertIn("posti reali", last)
