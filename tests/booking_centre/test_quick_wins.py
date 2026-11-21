@@ -402,3 +402,25 @@ class PastSlots(unittest.IsolatedAsyncioTestCase):
         city = self._case("2026-11-23T08:00:00+01:00")  # the day before
         await bc._desk_turn(city, city.inbound, list(city.chat), hold_self=False, fixed=None)
         self.assertTrue(any(text.startswith("confirm offer_id=of-S-3") for text in city.sent_to(HOSP)))
+
+
+class NoCaseNoMailbox(unittest.IsolatedAsyncioTestCase):
+    """A citizen message without a need_id never reads the whole mailbox (custody check)."""
+
+    async def test_history_is_not_read_without_a_case(self) -> None:
+        reset_memory()
+        probe = Message(type="chat", sender=CIT, msg_id="probe-1", need_id=None,
+                        body={"text": "ciao"}, recipient=AGENT)
+        city = FakeCity([probe])
+        reads: list[str | None] = []
+
+        async def history(need_id: str | None = None) -> list[Message]:
+            reads.append(need_id)
+            return list(city.chat)
+
+        city.history = history
+        self.addCleanup(setattr, bc, "role_of", bc.role_of)
+        bc.role_of = lambda: "booking_centre"
+        await bc.main(None, city)
+        self.assertEqual(reads, [])
+        self.assertTrue(city.sent_to(CIT))  # still answered

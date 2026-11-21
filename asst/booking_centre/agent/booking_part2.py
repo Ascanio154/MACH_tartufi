@@ -550,7 +550,7 @@ async def _no_silence(city: City, message: Message, chat: list[Message]) -> None
 
     citizen = message.sender
     try:
-        fresh = await city.history(need_id=message.need_id)
+        fresh = await _history(city, message.need_id, chat)
     except CapError:
         fresh = chat
     known = {row.msg_id for row in fresh}
