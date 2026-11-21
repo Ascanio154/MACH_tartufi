@@ -728,7 +728,18 @@ async def _forward_confirm(
     if not slot or not facility or not consent:
         return
     if _we(chat, agent, f"slot_id={slot}", to=facility, word="confirm"):
-        return
+        # Already forwarded. Forward again only if the facility never answered (no receipt,
+        # no cancel) and the last forward is old: a citizen who repeats the confirm after
+        # 15 minutes was lost (Sat 05:00: the facility gave up on a slow Ledger). Our
+        # facilities are idempotent: they reuse the hold and never send two receipts.
+        answered = any(
+            row.sender == facility and first_word(row.text) in {"booking.receipt", "cancel"}
+            for row in chat
+        )
+        last = _FORWARD_AT.get((slot, facility))
+        if answered or (last is not None and time.monotonic() - last < _RESEND_AFTER):
+            return
+        _LOG.info("care.forward.resend slot=%s facility=%s", slot, facility)
     parts = [
         "confirm",
         f"offer_id={offer_id}",
@@ -749,6 +760,7 @@ async def _forward_confirm(
         note += " Il cittadino ha segnalato esigenze di accessibilità: accoglietelo di conseguenza."
     parts.append(note)
     code = await _send(city, facility, " ".join(parts))
+    _FORWARD_AT[(slot, facility)] = time.monotonic()
     _USED.add(slot)
     if code is None:
         _CONFIRMED_TO.add((message.need_id or message.msg_id, facility))
@@ -768,6 +780,11 @@ async def _forward_confirm(
         why = _UNREACHABLE_IT if _lang(chat) == "it" else _UNREACHABLE_EN
         await _say(city, citizen, f"cancel offer_id={offer_id} reason=facility_unavailable {why}")
     await _advance(city, message, chat, fixed=None, replacing=True, avoid=facility)
+
+
+# (slot, facility) -> when this process last forwarded a confirm for it.
+_FORWARD_AT: dict[tuple[str, str], float] = {}
+_RESEND_AFTER = 300.0  # seconds before a repeated confirm is forwarded again
 
 
 async def _forward_receipt(city: City, message: Message, chat: list[Message]) -> None:

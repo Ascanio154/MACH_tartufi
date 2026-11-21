@@ -513,6 +513,10 @@ async def _on_booking_consent(city: City, message: Message, chat: list[Message])
     await _say(city, citizen, _phrase("book_declined", lang))
 
 
+# (citizen, phrase) -> when this process last said a status phrase to that citizen.
+_NOTED: dict[tuple[str, str], float] = {}
+
+
 async def _no_silence(city: City, message: Message, chat: list[Message]) -> None:
     """Nothing reached the citizen this turn: tell them where their booking stands."""
 
@@ -556,6 +560,13 @@ async def _no_silence(city: City, message: Message, chat: list[Message]) -> None
             return
     if name == "checking" and _exact(fresh, agent, _phrase(name, lang)):
         return  # a redelivered message: "I am on it" was already said, the offer follows
+    if name == "pending":
+        # A confirm and its cancels in the same second run as parallel turns: both read the
+        # history before either wrote, and the citizen got "Ho inoltrato..." twice (000319).
+        mark = (citizen, name)
+        if time.monotonic() - _NOTED.get(mark, float("-inf")) < 120.0:
+            return
+        _NOTED[mark] = time.monotonic()
     if name == "still_none":
         # Four cancels in the same second (journey 01790002) gave four identical sentences:
         # one is an answer, four read as a passive agent.
