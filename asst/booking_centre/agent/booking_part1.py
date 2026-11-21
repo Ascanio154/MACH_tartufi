@@ -571,6 +571,9 @@ def _lang(chat: list[Message]) -> str:
     """The citizen's language: ``lang=``, a named language, else how their first message reads."""
 
     first = ""
+    for row in chat:  # an explicit lang= token wins over a language named in any sentence
+        if row.sender.startswith("citizen:") and fields_of(row.text).get("lang"):
+            return fields_of(row.text)["lang"].lower()
     for row in chat:
         if row.sender.startswith("citizen:"):
             lang = _citizen_fields(row.text).get("lang", "")
