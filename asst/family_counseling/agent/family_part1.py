@@ -459,6 +459,10 @@ async def _on_confirm(
     )
     number = fields.get("prescription_number") or offer.get("prescription_number")
     book_here = hold_self or message.sender.startswith("agent:") or facility == agent
+    again = _receipt_again(chat, agent, message, slot)
+    if again:
+        await _say(city, message.sender, again)
+        return
     if book_here:
         if not _we(chat, agent, f"slot_id={slot}", to=LEDGER, word="hold"):
             parts = ["hold", f"slot_id={slot}"]

@@ -147,6 +147,7 @@ class MoreHumanAndRing(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self) -> None:
         fc._FAMILY_CASES.clear()
+        fc._SOFT.clear()
 
     async def test_checkin_welcomes_with_next_steps(self) -> None:
         city = LedgerCity()
@@ -281,6 +282,65 @@ class VisibleCollaboration(unittest.IsolatedAsyncioTestCase):
     def test_no_claim_when_the_notice_failed(self) -> None:
         self.assertNotIn("avvisato", fc._family_receipt_extras(False, False))
         self.assertIn("health card", fc._family_receipt_extras(False, True))
+class Level7Contention(unittest.IsolatedAsyncioTestCase):
+    """MACH-1.2 level 7: duplicates, soft lock, refusals with alternatives."""
+
+    def setUp(self) -> None:
+        fc._FAMILY_CASES.clear()
+        fc._SOFT.clear()
+        fc._RECEIPT_RESENT.clear()
+
+    async def _ask(self, city: LedgerCity, sender: str, rid: str) -> str:
+        ask = Message(type="chat", sender=sender, msg_id=f"q-{rid}", need_id=f"N-{rid}",
+                      recipient=AGENT, body={"text": "need.request service_type=family_counseling"
+                                             f".gynecology procedure=CONS-GIN request_id={rid}"})
+        city.chat.append(ask)
+        await fc._family(city, ask, list(city.chat))
+        return [row.text for row in city.chat if row.recipient == sender][-1]
+
+    async def test_soft_lock_keeps_offered_slots_for_their_request(self) -> None:
+        city = LedgerCity()
+        first = await self._ask(city, "agent:bc-a", "rq-a")
+        second = await self._ask(city, "agent:bc-b", "rq-b")
+        ids = lambda text: {fc.fields_of(l)["slot_id"] for l in text.splitlines() if l.startswith("offer ")}
+        self.assertEqual(ids(first), {"G-1", "G-2", "G-3"})
+        self.assertFalse(ids(first) & ids(second))  # nothing left: an honest no_availability
+        self.assertTrue(second.startswith("cancel request_id=rq-b reason=no_availability"))
+
+    async def test_duplicate_confirm_same_receipt_one_hold(self) -> None:
+        city = LedgerCity()
+        bc_a = "agent:bc-a"
+        confirm = "confirm offer_id=p-G-1 slot_id=G-1 citizen=citizen:far consent_ref=c-1 " \
+                  "cross_asst_consent_ref=cx-1"
+        city.chat = [msg(AGENT, "offer offer_id=p-G-1 slot_id=G-1 request_id=rq-c", bc_a),
+                     msg(bc_a, confirm, AGENT),
+                     msg(AGENT, "hold slot_id=G-1 citizen=citizen:far consent_ref=cx-1", LEDGER),
+                     msg(LEDGER, "held hold_id=H-1 slot_id=G-1 fence=1", AGENT),
+                     msg(AGENT, "commit hold_id=H-1 consent_ref=cx-1 fence=1", LEDGER),
+                     msg(LEDGER, "committed booking_id=B-77 ledger_ref=L-77 hold_id=H-1", AGENT),
+                     msg(AGENT, "booking.receipt booking_id=B-77 ledger_ref=L-77", bc_a)]
+        again = msg(bc_a, confirm, AGENT)
+        city.chat.append(again)
+        await fc._on_confirm(city, again, list(city.chat), hold_self=False)
+        self.assertEqual(len(city.to_ledger("hold")), 1)  # never a second hold
+        receipts = [row.text for row in city.chat if row.recipient == bc_a
+                    and row.text.startswith("booking.receipt")]
+        self.assertEqual(receipts, ["booking.receipt booking_id=B-77 ledger_ref=L-77"] * 2)
+        await fc._on_confirm(city, again, list(city.chat), hold_self=False)
+        self.assertEqual(len([row for row in city.chat if row.recipient == bc_a]), 3)
+
+    def test_refused_partner_hold_is_slot_taken_with_alternatives(self) -> None:
+        chat = [msg(AGENT, "agenda", LEDGER), msg(LEDGER, f"agenda agenda_now={NOW}", AGENT),
+                msg(LEDGER, "slots procedure=CONS-GIN page=1/1\n" + "\n".join(
+                    f"slot_id={sid} doctor_id=ASST-1-{doc} facility={AGENT} procedure=CONS-GIN "
+                    f"at={at} day={day} free=1" for sid, doc, at, day in SLOTS), AGENT),
+                msg(AGENT, "offer offer_id=p-G-1 slot_id=G-1 request_id=rq-x", "agent:bc-a")]
+        text = fc._ring_refusal(chat, AGENT, "agent:bc-a", "p-G-1", "G-1", "SLOT_HELD")
+        lines = text.splitlines()
+        self.assertEqual(lines[0], "cancel offer_id=p-G-1 slot_id=G-1 reason=slot_taken request_id=rq-x")
+        self.assertEqual([fc.fields_of(l)["slot_id"] for l in lines[1:]], ["G-2", "G-3"])
+        consent = fc._ring_refusal(chat, AGENT, "agent:bc-a", "p-G-1", "G-1", "CONSENT_MISSING")
+        self.assertEqual(consent.splitlines()[0].split()[3], "reason=consent_missing")
 
 
 if __name__ == "__main__":

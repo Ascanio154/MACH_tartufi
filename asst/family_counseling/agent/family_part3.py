@@ -215,10 +215,12 @@ async def _answer_ring(city: City, message: Message, chat: list[Message]) -> Non
         await _say(city, partner, f"cancel {token} reason=facility_unavailable")
         return
     deadline = _when(fields.get("deadline", ""))
+    clock = _ring_clock()
     slots = [slot for slot in fitting(
         [line for line in world.splitlines() if "slot_id=" in line], now=now,
         priority=fields.get("priority"), lang=fields.get("lang", "it").lower(), facility=agent,
-        procedure="CONS-GIN") if deadline is None or _when(slot["at"]) <= deadline]
+        procedure="CONS-GIN") if (deadline is None or _when(slot["at"]) <= deadline)
+        and not _soft_locked(slot["slot_id"], token, clock)]
     exact, relaxed = [], []
     for slot in slots:
         broken = _ring_broken(slot, fields)
@@ -227,6 +229,7 @@ async def _answer_ring(city: City, message: Message, chat: list[Message]) -> Non
         elif len(broken) == 1:
             relaxed.append((slot, broken[0]))
     if exact:
+        _soft_lock([slot["slot_id"] for slot in exact[:3]], token, clock)
         await _say(city, partner, "\n".join(_ring_line(slot, agent, token) for slot in exact[:3]))
         return
     lines = [f"cancel {token} reason=no_availability"]
@@ -240,6 +243,7 @@ async def _answer_ring(city: City, message: Message, chat: list[Message]) -> Non
         line = _ring_line(slot, agent, token) + f" relaxed={key}"
         if len(lines) < 4 and line not in lines:
             lines.append(line)
+    _soft_lock([fields_of(line)["slot_id"] for line in lines[1:]], token, clock)
     if len(lines) > 1:
         lines.append("Con tutti i criteri non c'è posto: queste sono le alternative più vicine, "
                      "ognuna cambia un solo criterio.")
@@ -428,12 +432,17 @@ async def _on_refused(
         and offer_id
         and not _we(chat, agent, f"offer_id={offer_id}", to=target, word="cancel")
     ):
-        reason = fields_of(message.text).get("code", "booking_refused")
-        await _say(
-            city,
-            target,
-            f"cancel offer_id={offer_id} reason={reason}",
-        )
+        found = fields_of(message.text)
+        reason = found.get("code") or found.get("reason") or "booking_refused"
+        if target.startswith("agent:"):
+            # MACH-1.2 (level 7): a shared reason and, below the cancel, our alternatives.
+            await _say(city, target, _ring_refusal(chat, agent, target, offer_id, slot, reason))
+        else:
+            await _say(
+                city,
+                target,
+                f"cancel offer_id={offer_id} reason={reason}",
+            )
     if hold_self:
         await _advance(city, message, chat, fixed="CONS-GIN", replacing=True)
 
@@ -508,3 +517,74 @@ async def _family_slot_free(city: City, state: _FamilyCase, citizen: str, messag
                        f"notice slot_free procedure=CONS-GIN slot_id={slot}\n"
                        "Dal consultorio: una persona ha rinunciato a questo posto, "
                        "resta libero per altri cittadini che vi chiedono una visita CONS-GIN.")
+
+
+# --- level 7: duplicates, contention, refusals (MACH-1.2) -------------------------------------
+# SOFT LOCK: for 60 real seconds after we offer a slot to one request, it is not offered to
+# another request_id. The Ledger stays the only arbiter: the first hold wins.
+_SOFT_LOCK_FOR = 60.0
+_SOFT: dict[str, tuple[float, str]] = {}
+_RECEIPT_RESENT: set[str] = set()
+_LEDGER_REASONS = {"CONSENT_MISSING": "consent_missing", "NO_CAPACITY": "no_capacity",
+                   "PRESCRIPTION_EXPIRED": "prescription_expired"}
+
+
+def _ring_clock() -> float:
+    return time.monotonic()
+
+
+def _soft_locked(slot_id: str, token: str, clock: float) -> bool:
+    held = _SOFT.get(slot_id)
+    return held is not None and held[1] != token and clock - held[0] < _SOFT_LOCK_FOR
+
+
+def _soft_lock(slot_ids: list[str], token: str, clock: float) -> None:
+    for slot_id in slot_ids:
+        _SOFT[slot_id] = (clock, token)
+    if len(_SOFT) > 2000:
+        for key in [key for key, (at, _) in _SOFT.items() if clock - at >= _SOFT_LOCK_FOR]:
+            del _SOFT[key]
+
+
+def _ring_refusal(chat: list[Message], agent: str, target: str, offer_id: str, slot: str,
+                  code: str) -> str:
+    """The Ledger refused a partner's hold: one cancel with a shared reason, alternatives below."""
+
+    reason = _LEDGER_REASONS.get(code.upper(), "slot_taken")
+    token = next((f"request_id={fields_of(row.text)['request_id']}" for row in chat
+                  if row.sender == agent and row.recipient == target
+                  and f"slot_id={slot}" in row.text.split()
+                  and fields_of(row.text).get("request_id")), "")
+    lines = [" ".join(part for part in (f"cancel offer_id={offer_id}", f"slot_id={slot}",
+                                        f"reason={reason}", token) if part)]
+    agenda, world = _ledger(chat, "agenda"), _latest_slots(chat)
+    now = _when("" if agenda is None else agenda.get("agenda_now", ""))
+    if reason == "slot_taken" and token and now is not None and world is not None:
+        clock = _ring_clock()
+        others = [row for row in fitting([line for line in world.splitlines() if "slot_id=" in line],
+                                         now=now, priority=None, lang="it", facility=agent,
+                                         procedure="CONS-GIN")
+                  if row["slot_id"] != slot and not _soft_locked(row["slot_id"], token, clock)][:3]
+        _soft_lock([row["slot_id"] for row in others], token, clock)
+        lines += [_ring_line(row, agent, token) for row in others]
+    return "\n".join(lines)
+
+
+def _receipt_again(chat: list[Message], agent: str, message: Message, slot: str) -> str:
+    """IDEMPOTENCY: a partner confirms the same offer twice -> the same receipt, never a hold."""
+
+    if not message.sender.startswith("agent:") or message.msg_id in _RECEIPT_RESENT:
+        return ""
+    for row in chat:
+        if row.sender != LEDGER or first_word(row.text) != "committed":
+            continue
+        found = fields_of(row.text)
+        if (found.get("slot_id") or _hold_slot(chat, agent, found.get("hold_id", ""))) != slot:
+            continue
+        token = f"booking_id={found.get('booking_id', '')}"
+        for sent in chat:
+            if (sent.sender == agent and sent.recipient == message.sender
+                    and first_word(sent.text) == "booking.receipt" and token in sent.text.split()):
+                _RECEIPT_RESENT.add(message.msg_id)
+                return sent.text
+    return ""
