@@ -791,3 +791,24 @@ class Level8RedFlagAndRuleChange(_Fresh):
         await advance(city)
         self.assertIn("purpose=prescription_renewal", city.sent_to(CIT)[-1])
         self.assertEqual(offer_messages(city), [])
+
+
+class SlowLedger(_Fresh):
+    async def test_a_ledger_answer_after_many_reads_still_gets_the_offer_in_the_turn(self) -> None:
+        # Night of 21/11: the Ledger answered after the old 6 s wait; first offer 14-24 min later.
+        full = booking_chat()
+        late = [row for row in full if row.sender == bc.LEDGER]
+
+        class Slow(PartnerCity):
+            reads = 0
+
+            async def history(self, need_id=None):
+                Slow.reads += 1
+                if Slow.reads == 12:          # the Ledger's rows land only now
+                    self.chat.extend(late)
+                return list(self.chat)
+
+        city = Slow([full[0]], peers=[])
+        await citizen_says(city, full[0].text)
+        self.assertTrue(offer_messages(city), city.sent_to(CIT))
+        self.assertEqual(len([t for t in city.sent_to(CIT) if "sto verificando" in t]), 0)

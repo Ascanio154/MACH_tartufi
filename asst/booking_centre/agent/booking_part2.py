@@ -545,6 +545,8 @@ async def _no_silence(city: City, message: Message, chat: list[Message]) -> None
                 city, citizen, f"data.request purpose=booking fields=prescription_number {sentence}"
             )
             return
+    if name == "checking" and _exact(fresh, agent, _phrase(name, lang)):
+        return  # a redelivered message: "I am on it" was already said, the offer follows
     if name == "still_none":
         # Four cancels in the same second (journey 01790002) gave four identical sentences:
         # one is an answer, four read as a passive agent.
@@ -700,7 +702,7 @@ async def _answer_partner(city: City, message: Message, chat: list[Message]) -> 
         world = _latest_slots(rows)
         return world is not None and procedure in world and _ledger(rows, "agenda") is not None
 
-    chat = await _until(city, message.need_id, chat, ready)
+    chat = await _until(city, message.need_id, chat, ready, _SHORT_TRIES * 2)  # partners want it fast
     world = _latest_slots(chat)
     agenda = _ledger(chat, "agenda")
     now = _when("" if agenda is None else agenda.get("agenda_now", ""))

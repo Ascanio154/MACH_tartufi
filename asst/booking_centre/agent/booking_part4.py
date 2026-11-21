@@ -98,7 +98,7 @@ async def _partner_retry(
         return any(r.sender in fresh and first_word(r.text) == "offer" for r in rows) or (
             fresh <= replies)
 
-    rows = await _until(city, message.need_id, chat, answered)
+    rows = await _until(city, message.need_id, chat, answered, _SHORT_TRIES)
     if not any(r.sender in fresh and first_word(r.text) == "offer" for r in rows):
         await _close_search(city, rows, agent, citizen, key)
 

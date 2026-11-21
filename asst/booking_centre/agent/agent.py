@@ -71,8 +71,12 @@ _RX = re.compile(r"^prescription_number-[A-Z0-9-]{4,40}$")
 _LOG = logging.getLogger("care")
 # The Relay accepts a ledger reply and then the agent rejects the push, so the reply sits in
 # the case history and never opens a turn. Wait briefly and read it back from history.
-_PULL_TRIES = 8  # the same 6 s, a third of the history reads (38 in 6 s seen live)
-_PULL_PAUSE = 0.75
+# Night of 21/11: the Ledger answered after more than 6 s, the turn gave up, and the citizen got
+# the first offer only at their own resend, 14-24 minutes later (30 journeys, none booked). Wait
+# up to 40 s for a Ledger answer, reading the history every 2 s; partners keep the short wait.
+_PULL_TRIES = 20
+_PULL_PAUSE = 2.0
+_SHORT_TRIES = 3
 # Needs whose sent offers this process remembers; the oldest is forgotten first.
 _SENT_NEEDS = 4096
 # Every slot goes in ONE offer message: the citizen chooses in that turn, and a later message
@@ -657,18 +661,20 @@ async def _until(
     need_id: str | None,
     chat: list[Message],
     ready: Callable[[list[Message]], bool],
+    tries: int = 0,
 ) -> list[Message]:
-    """Re-read the case until ``ready`` or the short wait ends. The push may never arrive."""
+    """Re-read the case until ``ready`` or the wait ends. The push may never arrive."""
 
     fresh = chat
-    for attempt in range(_PULL_TRIES):
+    tries = tries or _PULL_TRIES
+    for attempt in range(tries):
         try:
             fresh = await city.history(need_id=need_id)
         except CapError:
             fresh = chat
         if ready(fresh):
             return fresh
-        if attempt + 1 < _PULL_TRIES:
+        if attempt + 1 < tries:
             await asyncio.sleep(_PULL_PAUSE)
     return fresh
 

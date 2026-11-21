@@ -410,7 +410,7 @@ async def _advance_alone(
             # custody check): offer now only what is inside the window; a partner's offer opens
             # its own turn, and the out-of-window alternative waits for every partner's "no" or
             # for the citizen's next message.
-            fresh = await _until(city, message.need_id, chat, answered)
+            fresh = await _until(city, message.need_id, chat, answered, _SHORT_TRIES)
             if not any(row.sender in partners and first_word(row.text) == "offer" for row in fresh):
                 await _close_search(city, fresh, agent, citizen, key, late=answered(fresh))
             return
