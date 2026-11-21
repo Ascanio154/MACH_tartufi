@@ -478,3 +478,25 @@ class SharedLedgerReads(unittest.IsolatedAsyncioTestCase):
         fc._SHARED_READS.clear()
         fc._SHARED_READS["agenda"] = (time.monotonic() - 3600, None)
         self.assertIsNone(fc._shared_read("agenda"))
+
+
+class ParallelLedgerAsks(unittest.IsolatedAsyncioTestCase):
+    """Ledger answers are deliveries (~5 min on Sat 21/11): the first turn asks agenda and the
+    first slot page together, so one late delivery round brings both."""
+
+    async def test_silent_ledger_gets_agenda_and_world_in_the_same_turn(self):
+        class Silent(LedgerCity):
+            async def say(self, to, text, *, status=None):
+                sent = msg(AGENT, text, to)
+                self.chat.append(sent)
+                return sent.msg_id
+
+        fc._FAMILY_CASES.clear()
+        fc._SHARED_READS.clear()
+        city = Silent()
+        await citizen_says(city, "Buongiorno, vorrei un appuntamento al consultorio")
+        asked = [t.split()[0] for t in (row.text for row in city.chat
+                                        if row.sender == AGENT and row.recipient == LEDGER)]
+        self.assertIn("agenda", asked)
+        self.assertIn("world", asked)
+        self.assertLess(asked.index("world"), len(asked))

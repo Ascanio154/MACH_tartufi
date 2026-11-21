@@ -400,8 +400,10 @@ def _family_preferences(rows: list[Message], citizen: str) -> dict[str, str]:
 # answer another case got moments ago: the agenda advanced at 60 agenda s per real s, the slot
 # pages as they were (a slot taken since is refused at the hold, which re-checks the clock).
 _SHARED_READS: dict[str, tuple[float, Message | None]] = {}
-_SHARED_AGENDA_FOR = 120.0  # real seconds
-_SHARED_WORLD_FOR = 60.0
+# Real seconds. Long on purpose: a fresh Ledger answer takes minutes to arrive. The agenda
+# is advanced at 60x; a slot taken since is refused at the hold, which re-reads the clock.
+_SHARED_AGENDA_FOR = 900.0
+_SHARED_WORLD_FOR = 300.0
 
 
 def _shared_read(command: str) -> str | None:
@@ -457,7 +459,13 @@ async def _family_offers(
             return
     refresh = refresh or bool(offers) or message.sender == citizen
     await _family_send(city, state, LEDGER, "rules", repeat=refresh)  # No prescription for direct access.
-    agenda = await _family_read(city, state, "agenda", "agenda", refresh=refresh)
+    # Ask agenda and the first slot page together: Ledger answers are deliveries (~5 min on
+    # Sat 21/11), so asking one after the other cost two delivery rounds before any offer.
+    first_page = f"world procedure=CONS-GIN facility={city.agent_id} page=1"
+    for command in ("agenda", first_page):
+        if _shared_read(command) is None:
+            await _family_send(city, state, LEDGER, command, repeat=refresh)
+    agenda = await _family_read(city, state, "agenda", "agenda", refresh=False)
     now = _when("" if agenda is None else _family_fields(agenda).get("agenda_now", ""))
     if now is None:
         await _family_note(city, state, citizen, "ledger_timeout")
@@ -465,7 +473,7 @@ async def _family_offers(
     lines: list[str] = []
     for page in range(1, _MAX_PAGE + 1):
         command = f"world procedure=CONS-GIN facility={city.agent_id} page={page}"
-        world = await _family_read(city, state, command, "slots", refresh=refresh)
+        world = await _family_read(city, state, command, "slots", refresh=refresh and page > 1)
         if world is None or _family_head(world) == "refused":
             await _family_note(city, state, citizen, "ledger_timeout" if world is None else _family_fields(world).get("code", "booking_refused"))
             return
