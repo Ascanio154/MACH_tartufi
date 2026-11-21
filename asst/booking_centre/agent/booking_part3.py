@@ -294,7 +294,7 @@ async def _advance_alone(
         world = _latest_slots(chat)
         start = _TODAY_PAGE.get(procedure, 1)  # where the last case found today's slots
         if now is not None and world is not None:
-            if not _world_cached(procedure, _WORLD_FOR / 2) and not _asked(chat, agent, procedure, start):
+            if not _world_cached(procedure, _WORLD_REFRESH) and not _asked(chat, agent, procedure, start):
                 # Served from a page read a while ago: ask again for the next case, no waiting.
                 await _say(city, LEDGER, f"world procedure={procedure} page={start}")
             break

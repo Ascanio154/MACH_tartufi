@@ -872,6 +872,15 @@ class SharedLedgerAnswers(_Fresh):
         self.assertIn(f"prescription prescription_number={RX}", asked)
         self.assertFalse([text for text in asked if text == "agenda" or text.startswith("world")])
 
+    async def test_answers_from_ten_minutes_ago_still_serve_the_next_burst(self) -> None:
+        # 21/11 12:59: 20 citizens at once, the catalogue read took over 20 s and the 90 s
+        # cache was empty again at their resends: 36 of 45 cases got no offer.
+        bc._learn(self.stamped(booking_chat(), 600))
+        self.assertIsNotNone(bc._agenda_guess())
+        self.assertTrue(bc._world_cached("VIS-FIS"))
+        self.assertFalse(bc._world_cached("VIS-FIS", bc._WORLD_REFRESH))  # a fresh read is asked
+        self.assertTrue(bc._agenda_stale())
+
     async def test_old_answers_are_not_used(self) -> None:
         bc._learn(self.stamped(booking_chat(), 3600))
         self.assertIsNone(bc._agenda_guess())

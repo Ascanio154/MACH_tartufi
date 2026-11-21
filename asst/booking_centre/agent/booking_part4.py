@@ -429,7 +429,11 @@ def _needs_access(chat: list[Message]) -> bool:
 # procedure is used again; _USED and _SHOWN keep the slots we already gave away out of it.
 _AGENDA: list[datetime] = []  # [agenda time in the Ledger's answer, real time of that answer]
 _WORLD: dict[str, dict[int, tuple[datetime, str]]] = {}  # procedure -> page -> (real time, text)
-_AGENDA_FOR, _WORLD_FOR = 300.0, 90.0  # seconds a cached answer is used for
+# 21/11 12:59: citizens arrive in bursts about 15 minutes apart and a catalogue read takes over
+# the 20 s turn; with 90 s of cache every burst and every resend waited again (36/45 no offer).
+# A cached answer is used for 15 minutes; a fresh read is still asked (not waited for) as before.
+_AGENDA_FOR, _WORLD_FOR = 900.0, 900.0  # seconds a cached answer is used for
+_AGENDA_REFRESH, _WORLD_REFRESH = 150.0, 45.0  # older than this: ask the Ledger again
 _BORN: dict[str, datetime] = {}  # need -> the agenda time we first saw for it
 
 
@@ -474,7 +478,7 @@ def _agenda_guess() -> datetime | None:
 def _agenda_stale() -> bool:
     """True when the next case should ask the Ledger again (the answer is not waited for)."""
 
-    return not _AGENDA or not 0 <= _age(_AGENDA[1]) <= _AGENDA_FOR / 2
+    return not _AGENDA or not 0 <= _age(_AGENDA[1]) <= _AGENDA_REFRESH
 
 
 def _world_cached(procedure: str, limit: float = _WORLD_FOR) -> list[str]:
