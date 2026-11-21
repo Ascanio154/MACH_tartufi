@@ -203,7 +203,17 @@ async def _advance_alone(
     citizen = _citizen(chat)
     if citizen is None:
         return
-    if _who(chat, citizen) in _PENDING or _booked(chat, agent, citizen):
+    who = _who(chat, citizen)
+    if (who in _PENDING and message.sender == citizen and not _booked(chat, agent, citizen)
+            and time.monotonic() - _PENDING_AT.get(who, time.monotonic()) > _PENDING_STALE):
+        # Level 7: the facility took the choice and went silent (down). Free the case, say so,
+        # and look elsewhere; that facility's slots stay out while it is marked down.
+        stuck = _PENDING.pop(who)
+        _DOWN[_find_offer(chat, agent, stuck).get("facility", "")] = time.monotonic()
+        why = _UNREACHABLE_IT if _lang(chat) == "it" else _UNREACHABLE_EN
+        await _say(city, citizen, f"cancel offer_id={stuck} reason=facility_unavailable {why}")
+        replacing = True
+    if who in _PENDING or _booked(chat, agent, citizen):
         return  # a choice is on its way or booked: never a new offer after the confirm
     reply = _ledger(chat, "prescription")
     priority = None if reply is None else reply.get("priority")
@@ -323,6 +333,7 @@ async def _advance_alone(
             slot
             for slot in fits
             if slot.get("slot_id") not in taken | _USED and slot.get("facility") != avoid
+            and not _down(slot.get("facility", ""))
             # Journey 104: the facility refused s1 twice. Same doctor, same day: offer another.
             and f"{slot.get('doctor_id', '')}|{slot.get('at', '')[:10]}" not in refused
         ]
@@ -358,7 +369,7 @@ async def _advance_alone(
     if taken and not refusal:
         return
     page, further = _page(world)[0], _next_page(world, now, priority)
-    if further:
+    if further and not any(_down(slot.get("facility", "")) for slot in fits):
         if not _asked(chat, agent, procedure, further):
             await _say(city, LEDGER, f"world procedure={procedure} page={further}")
         # Journey 162: the Ledger's reply opens no turn, so the citizen waited 16 minutes for
@@ -460,7 +471,9 @@ def _relaxed_block(chat: list[Message], agent: str, late: bool = True) -> str:
     lines = {fields_of(line).get("slot_id"): line for page in chat
              if page.sender == LEDGER and first_word(page.text) == "slots"
              for line in page.text.splitlines() if "slot_id=" in line}
-    taken = _withdrawn(chat, agent) | _USED
+    taken = _withdrawn(chat, agent) | _USED | {
+        fields_of(line).get("slot_id") for line in lines.values()
+        if _down(fields_of(line).get("facility", ""))}
     for speaks, window in (("it", priority), (lang, "P"), ("it", "P"))[:3 if late else 1]:
         fits = [slot for slot in fitting(list(lines.values()), now=now, priority=window,
                                          lang=speaks, procedure=procedure)
@@ -725,7 +738,9 @@ async def _forward_confirm(
         _CONFIRMED_TO.add((message.need_id or message.msg_id, facility))
         if citizen.startswith("citizen:") and not message.sender.startswith("agent:"):
             _PENDING[_who(chat, citizen)] = offer_id
+            _PENDING_AT[_who(chat, citizen)] = time.monotonic()
         return
+    _DOWN[facility] = time.monotonic()
     # Hospital down (TARGET_NOT_VISIBLE) or another refusal: never resend a 4xx. Tell the
     # citizen, then offer what is still free at the other facilities.
     _LOG.info("care.forward.refused %s", code)

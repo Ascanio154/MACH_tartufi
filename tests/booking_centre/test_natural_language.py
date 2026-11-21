@@ -440,10 +440,16 @@ class LogReport2343(_Fresh):
         cancel = [t for t in to_citizen(city) if t.startswith("cancel offer_id=of-S-1")]
         self.assertEqual(len(cancel), 1)
         self.assertIn("altre date", cancel[0])
-        again = bc._offers_in(to_citizen(city)[-1])
-        self.assertTrue(again)
-        # S-1 and S-2 are both h1 on Monday 23: neither comes back.
-        self.assertFalse({o["slot_id"] for o in again} & {"S-1", "S-2"})
+        again = {o["slot_id"] for o in bc._offers_in(to_citizen(city)[-1])}
+        # Level 7: one refusal is a lost race. S-2 (same doctor, same day) is still offered.
+        self.assertIn("S-2", again)
+        self.assertNotIn("S-1", again)
+        await desk(city, msg(CIT, "confirm offer_id=of-S-2 consent_ref=cons-1", AGENT))
+        await desk(city, msg(HOSP, "cancel offer_id=of-S-2 reason=facility_cancelled", AGENT))
+        # A second refusal for h1 on Monday 23 (journey 104): now neither comes back.
+        last = {o["slot_id"] for o in bc._offers_in(to_citizen(city)[-1])}
+        self.assertTrue(last)
+        self.assertFalse(last & {"S-1", "S-2"})
 
     async def test_same_cancel_twice_told_once(self) -> None:
         chat = booking_chat(slots=DEFAULT_SLOTS[:5])
