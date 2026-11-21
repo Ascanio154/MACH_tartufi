@@ -318,7 +318,7 @@ async def _advance_alone(
     chosen = [
         slot
         for slot in fits
-        if slot.get("slot_id") not in taken and slot.get("facility") != avoid
+        if slot.get("slot_id") not in taken | _USED and slot.get("facility") != avoid
         # Journey 104: the facility refused s1 twice. Same doctor, same day: offer something else.
         and f"{slot.get('doctor_id', '')}|{slot.get('at', '')[:10]}" not in refused
     ]
@@ -340,15 +340,23 @@ async def _advance_alone(
                 if replacing:
                     sent.again.add(offer["slot_id"])
         return
-    if taken and not replacing:
+    refusal = replacing or (message.sender == citizen and "cancel" in words(message.text))
+    if taken and not refusal:
         return
     page, pages = _page(world)
     if page < pages and page < _MAX_PAGE:
         if not _asked(chat, agent, procedure, page + 1):
             await _say(city, LEDGER, f"world procedure={procedure} page={page + 1}")
+        # Journey 162: the Ledger's reply opens no turn, so the citizen waited 16 minutes for
+        # their own resend. Read the next page back in this turn and go on.
+        fresh = await _until(city, message.need_id, chat,
+                             lambda rows: _page(_latest_slots(rows) or "")[0] > page)
+        if _page(_latest_slots(fresh) or "")[0] > page:
+            await _advance_alone(city, message, fresh, key, fixed=fixed, replacing=replacing,
+                                 avoid=avoid)
         return
-    # Our ASST has nothing that fits: ask the ring partners (approach A).
-    if not fits and fixed is None and priority != "P":
+    # Our ASST has nothing left to offer this citizen: ask the ring partners (approach A).
+    if fixed is None and priority != "P":
         already = _partners_asked(chat, agent, key)
         asked = await _ask_partners(city, chat, agent, citizen, procedure, priority, key)
         # No partner to ask (empty Index, error): say so now instead of leaving them waiting.
@@ -371,7 +379,7 @@ async def _advance_alone(
                 await _close_search(city, fresh, agent, citizen, key)
             return
         # The citizen writes again and no partner slot reached them: say so, not silence.
-        if message.sender.startswith("citizen:") and not _partner_offered(key, number):
+        if (message.sender.startswith("citizen:") or replacing) and not _partner_offered(key, number):
             await _close_search(city, chat, agent, citizen, key)
 
 
@@ -399,39 +407,14 @@ async def _close_search(city: City, chat: list[Message], agent: str, citizen: st
         return
     if _we(chat, agent, f"offer_id=wl-{key}", to=citizen, word="offer"):
         return
-    relaxed = _relaxed_block(chat, agent)
-    if relaxed and await _say(city, citizen, relaxed):
-        # Rubric: when nothing matches (S empty), a relaxed alternative is what is asked for.
+    # S not empty and no booking is -1, and a B/D citizen refuses the waiting list: offer real
+    # slots with one constraint relaxed; with none left, an honest sentence.
+    if await _say(city, citizen, _relaxed_block(chat, agent) or text):
         entry.offers.add("partner-closed")
-        return
-    # Nothing to relax either: the waiting list is the alternative (journeys 106/113, -1 each
-    # for "no_alternative" with a bare "no slot" sentence).
-    waitlist = _waitlist_block(chat, agent, key)
-    if waitlist and await _say(city, citizen, waitlist):
-        entry.offers.add("partner-closed")
-        return
-    if await _say(city, citizen, text):
-        entry.offers.add("partner-closed")
-
-
-def _waitlist_block(chat: list[Message], agent: str, key: str) -> str:
-    """One waiting-list offer with the referral's fields and a human sentence."""
-
-    number = _number(chat)
-    row = _rx_line(chat, agent, number) if number else None
-    reply = {} if row is None else fields_of(row.text)
-    parts = ["offer", f"offer_id=wl-{key}", "waiting_list=true"]
-    for name in ("procedure", "priority"):
-        if reply.get(name):
-            parts.append(f"{name}={reply[name]}")
-    if number:
-        parts.append(f"prescription_number={number}")
-    sentence = _WAITLIST_IT if _lang(chat) == "it" else _WAITLIST_EN
-    return " ".join(parts) + "\n" + sentence
 
 
 def _relaxed_block(chat: list[Message], agent: str) -> str:
-    """Our slots without the language and doctor-gender filters, in one offer message."""
+    """Our real slots with one constraint relaxed: the doctor first, then the priority window."""
 
     number = _number(chat)
     row = _rx_line(chat, agent, number) if number else None
@@ -439,20 +422,22 @@ def _relaxed_block(chat: list[Message], agent: str) -> str:
     procedure, priority = reply.get("procedure"), reply.get("priority")
     agenda = _ledger(chat, "agenda")
     now = _when("" if agenda is None else agenda.get("agenda_now", ""))
-    world = _latest_slots(chat)
-    if not procedure or now is None or world is None or priority == "P":
+    if not procedure or now is None or priority == "P":
         return ""
     lang = _lang(chat)
-    if lang == "it" and _gender(chat) is None:
-        return ""  # nothing to relax: the window or the agenda is what is missing
-    fits = fitting([line for line in world.splitlines() if "slot_id=" in line], now=now,
-                   priority=priority, lang="it", procedure=procedure)
-    taken = _offered(chat, agent, number)
-    fits = [slot for slot in fits if slot.get("slot_id") not in taken]
-    if not fits:
-        return ""
-    lead = _RELAXED_IT if lang == "it" else _RELAXED_EN
-    return _offer_block(_pick(fits, _days(chat)), number, priority, lang, lead=lead)
+    # Every world page read for this case: the in-window slots sit on the first ones.
+    lines = {fields_of(line).get("slot_id"): line for page in chat
+             if page.sender == LEDGER and first_word(page.text) == "slots"
+             for line in page.text.splitlines() if "slot_id=" in line}
+    taken = _withdrawn(chat, agent) | _USED
+    for speaks, window in (("it", priority), (lang, "P"), ("it", "P")):
+        fits = [slot for slot in fitting(list(lines.values()), now=now, priority=window,
+                                         lang=speaks, procedure=procedure)
+                if slot.get("slot_id") not in taken]
+        if fits:
+            lead = _RELAXED_IT if lang == "it" else _RELAXED_EN
+            return _offer_block(_pick(fits, _days(chat)), number, priority, lang, lead=lead)
+    return ""
 
 
 async def _on_confirm(
@@ -704,6 +689,7 @@ async def _forward_confirm(
         note += " Il cittadino ha segnalato esigenze di accessibilità: accoglietelo di conseguenza."
     parts.append(note)
     code = await _send(city, facility, " ".join(parts))
+    _USED.add(slot)
     if code is None:
         _CONFIRMED_TO.add((message.need_id or message.msg_id, facility))
         if citizen.startswith("citizen:") and not message.sender.startswith("agent:"):

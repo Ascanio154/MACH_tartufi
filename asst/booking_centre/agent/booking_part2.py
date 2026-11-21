@@ -114,6 +114,10 @@ async def _desk_turn(
         if _open_booking_ask(message.sender) and head not in {"need.request"}:
             await _on_booking_consent(city, message, chat)
             return
+        if "cancel" in kind and "confirm" not in kind:
+            # Journey 116: a refusal names the offer too. Never a pick: look for something else.
+            await _advance(city, message, chat, fixed=fixed, replacing=False)
+            return
         offers = _open_offers(chat, city.agent_id, message.sender)
         new_number = _citizen_fields(message.text).get("prescription_number")
         same_case = new_number is None or any(
@@ -158,6 +162,8 @@ def _who(chat: list[Message], citizen: str) -> str:
 
 # Need -> the agent (another ASST's booking centre) whose confirm we forwarded.
 _CONFIRMED_BY: dict[str, str] = {}
+# Slots already sent to a facility for a hold (booked or refused): never offered to anyone again.
+_USED: set[str] = set()
 # Citizens whose receipt we forwarded.
 _BOOKED: set[str] = set()
 # (agent, need) pairs we already explained our message format to.
@@ -321,6 +327,8 @@ def _open_offers(chat: list[Message], agent: str, citizen: str) -> list[dict[str
     cancelled: set[str] = set()
     booked = False
     for row in chat:
+        if row.sender == citizen and "cancel" in words(row.text):
+            cancelled.add(fields_of(row.text).get("offer_id", ""))  # the citizen refused it
         if row.sender != agent or row.recipient not in ("", citizen):
             continue
         found = _offers_in(row.text)
@@ -450,12 +458,16 @@ async def _no_silence(city: City, message: Message, chat: list[Message]) -> None
     lang = _lang(fresh)
     key = message.need_id or message.msg_id
     number = _number(fresh)
+    still = _open_offers(fresh, agent, citizen)
     if _booked(fresh, agent, citizen):
         name = "booked"
     elif _who(fresh, citizen) in _PENDING:
         name = "pending"
-    elif _open_offers(fresh, agent, citizen):
-        name = "offers_open"
+    elif still:
+        # "Which offer_id, slot_id?": the citizen reads fields, so list the open offers again.
+        lines = ["offer " + " ".join(f"{k}={v}" for k, v in offer.items()) for offer in still]
+        await _say(city, citizen, "\n".join([*lines, _phrase("offers_open", lang)])[:_MAX_TEXT])
+        return
     elif "partner-closed" in _sent(key).offers:
         name = "still_none"
     elif _partners_asked(fresh, agent, key) and not _partner_offered(key, number):

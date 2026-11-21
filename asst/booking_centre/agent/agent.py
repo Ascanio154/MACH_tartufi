@@ -98,14 +98,16 @@ _OFFER_HELP_EN = (
     "I will let the facility know; if you can, reach it by public transport."
 )
 _RELAXED_IT = (
-    "Non ho trovato posti con tutte le sue preferenze, né da noi né nelle ASST vicine. In "
-    "alternativa le propongo questi appuntamenti, con medici che parlano italiano; se non le "
-    "vanno bene, mi indichi altri giorni e riprovo."
+    "Non ho trovato posti con tutte le sue preferenze entro i tempi della ricetta, né da noi né "
+    "finora nelle ASST vicine. Per non lasciarla senza visita le propongo questi posti reali, "
+    "i più vicini a quanto ha chiesto (cambia il medico o la data). Io continuo a cercare: se "
+    "non le vanno bene, mi indichi altri giorni."
 )
 _RELAXED_EN = (
-    "I found no slot matching all your preferences, here or at the nearby ASSTs. As an "
-    "alternative, here are these appointments with Italian-speaking doctors; if they don't suit "
-    "you, tell me other days and I will search again."
+    "I found no slot matching all your preferences within your referral's time window, here or "
+    "so far at the nearby ASSTs. So that you are not left without a visit, here are real "
+    "appointments, the closest to what you asked (a different doctor or date). I keep "
+    "searching: if they don't suit you, tell me other days."
 )
 _ACCESS_WORDS = re.compile(
     r"\b(carrozzina|sedia a rotelle|disabilit|non deambul|stampelle|deambulator|ascensore|"
@@ -145,27 +147,17 @@ _RARE_LANG = "si"
 # A citizen speaking a rare language needs the partner whose h3 speaks it: ask more partners.
 _MAX_PARTNERS_RARE = 24  # level 4: only one ASST's h3 speaks each rare language, so ask them all
 _NO_PARTNER_IT = (
-    "Mi dispiace: al momento non ci sono posti adatti né da noi né nelle ASST vicine. "
-    "Se può indicarmi altri giorni o un'altra preferenza sul medico, riprovo subito."
+    "Mi dispiace: al momento non ci sono posti adatti né da noi né nelle ASST vicine. Continuo "
+    "a cercare e le scrivo appena se ne libera uno; se può indicarmi altri giorni o un'altra "
+    "preferenza sul medico, riprovo subito."
 )
 _NO_PARTNER_EN = (
-    "I'm sorry: right now there is no suitable slot in our ASST or the nearby ones. "
-    "If you can tell me other days or another doctor preference, I will search again at once."
+    "I'm sorry: right now there is no suitable slot in our ASST or the nearby ones. I keep "
+    "searching and will write to you as soon as one frees up; if you can tell me other days or "
+    "another doctor preference, I will search again at once."
 )
-# S empty (no slot fits, here or at the partners): the rubric asks for a relaxed alternative.
-# The waiting list is the one that never books outside what the citizen asked for.
-_WAITLIST_IT = (
-    "Mi dispiace: al momento non ci sono posti adatti né da noi né nelle ASST vicine. Non la "
-    "lascio senza risposta: la metto in lista d'attesa e, appena si libera un posto adatto, la "
-    "avviso io senza che debba richiamare. Se può indicarmi altri giorni o accetta un altro "
-    "medico, me lo scriva e cerco subito di nuovo."
-)
-_WAITLIST_EN = (
-    "I'm sorry: right now there is no suitable slot in our ASST or the nearby ones. I will not "
-    "leave you without an answer: I am putting you on the waiting list and I will write to you "
-    "as soon as a suitable slot frees up, no need to call again. If you can tell me other days "
-    "or accept another doctor, write to me and I will search again at once."
-)
+# The waiting list is the right offer for priority P only (kit rules); a B or D citizen
+# refuses it (journeys 116-166) and gets real slots instead.
 _WAITLIST_OK_IT = (
     "Perfetto, è in lista d'attesa: appena si libera un posto adatto le scrivo io. Se nel "
     "frattempo può indicarmi altri giorni, cerco subito di nuovo."

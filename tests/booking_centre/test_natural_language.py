@@ -471,7 +471,7 @@ class LogReport2343(_Fresh):
         await desk(city, chat[0])
         last = to_citizen(city)[-1]
         self.assertTrue(bc._offers_in(last), to_citizen(city))
-        self.assertIn("Italian-speaking", last)
+        self.assertIn("a different doctor", last)
 
     async def test_confirm_to_facility_explains_and_flags_access(self) -> None:
         chat = booking_chat(slots=DEFAULT_SLOTS[:5],

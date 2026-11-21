@@ -13,6 +13,7 @@ from city_sdk.city import CapError, Message, Peer
 from tests.booking_centre.test_quick_wins import (
     AGENT,
     CIT,
+    DEFAULT_SLOTS,
     HOSP,
     NEED,
     RX,
@@ -408,12 +409,44 @@ class ReceiptOnce(_Fresh):
 class Level4Live(_Fresh):
     """Fixes from the level 4 live logs (journeys 106, 113, 118, 141)."""
 
-    async def test_nothing_anywhere_gets_waiting_list(self) -> None:
+    async def test_nothing_anywhere_never_waiting_list_for_d(self) -> None:
+        # Journeys 116-166: a B/D citizen refuses the waiting list and the journey fails (-1).
         city = await asked_city()
-        waits = [t for t in city.sent_to(CIT) if "waiting_list=true" in t.split()]
-        self.assertEqual(len(waits), 1)
-        self.assertIn("lista d'attesa", waits[0])
-        self.assertEqual(bc.understood(msg(AGENT, waits[0], CIT)).type, "offer")
+        self.assertEqual([t for t in city.sent_to(CIT) if "waiting_list=true" in t.split()], [])
+        self.assertIn("Continuo a cercare", city.sent_to(CIT)[-1])
+
+    async def test_no_slot_in_window_offers_the_first_real_one_later(self) -> None:
+        late = [slot("S-LATE", "h1", "2026-12-01T09:00:00+01:00", "tue")]
+        city = PartnerCity(booking_chat(slots=late), peers=peers())
+        await advance(city)
+        last = city.sent_to(CIT)[-1]
+        self.assertEqual([o["slot_id"] for o in bc._offers_in(last)], ["S-LATE"])
+        self.assertIn("posti reali", last)
+
+    async def test_citizen_cancel_is_a_refusal_not_a_pick(self) -> None:
+        city = PartnerCity(booking_chat(), peers=peers())
+        await citizen_says(city, f"need.request prescription_number={RX} lang=it")
+        await citizen_says(city, "Non posso quel giorno. cancel offer_id=of-S-3 reason=day")
+        self.assertEqual(confirms_to(city, HOSP), [])
+        open_ids = {o["offer_id"] for o in bc._open_offers(city.chat, AGENT, CIT)}
+        self.assertNotIn("of-S-3", open_ids)
+
+    async def test_which_offer_id_gets_the_open_offers_again(self) -> None:
+        city = PartnerCity(booking_chat(), peers=peers())
+        await citizen_says(city, f"need.request prescription_number={RX} lang=it")
+        await citizen_says(city, "Which offer_id, slot_id?")
+        again = bc._offers_in(city.sent_to(CIT)[-1])
+        self.assertTrue(again and all(o.get("slot_id") for o in again), city.sent_to(CIT)[-1])
+
+    async def test_two_facility_refusals_never_end_in_silence(self) -> None:
+        # Journey 162: both offered slots refused by the facility, then nothing more was said.
+        city = PartnerCity(booking_chat(slots=DEFAULT_SLOTS[:1] + DEFAULT_SLOTS[2:3]), peers=peers())
+        await citizen_says(city, f"need.request prescription_number={RX} lang=it")
+        for sid in ("S-1", "S-3"):
+            await citizen_says(city, f"confirm offer_id=of-{sid} consent_ref=cons-1")
+            await partner_says(city, HOSP, f"cancel offer_id=of-{sid} reason=slot_taken")
+        self.assertTrue(requests(city))
+        self.assertFalse(city.sent_to(CIT)[-1].startswith("cancel"), city.sent_to(CIT)[-1])
 
     async def test_waiting_list_pick_is_acknowledged(self) -> None:
         city = await asked_city()
@@ -441,8 +474,8 @@ class Level4Live(_Fresh):
                                                   "tue", facility=peer)
                                + " doctor_lang=it/en doctor_gender=f")
         waits = [t for t in city.sent_to(CIT) if "waiting_list=true" in t.split()]
-        self.assertEqual(len(waits), 1)
-        self.assertLessEqual(before, 1)
+        self.assertEqual((before, waits), (0, []))
+        self.assertEqual(len([t for t in city.sent_to(CIT) if "I keep searching" in t]), 1)
 
     async def test_receipt_from_unknown_agent_not_forwarded(self) -> None:
         city = await asked_city()
