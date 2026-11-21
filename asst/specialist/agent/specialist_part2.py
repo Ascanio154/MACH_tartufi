@@ -343,33 +343,34 @@ def _latest_hold(chat: list[Message], agent: str) -> tuple[str, str | None]:
 
 async def _finish_booking(
     city: City, message: Message, chat: list[Message], slot: str, *, hold_self: bool
-) -> None:
-    """Hold is in the mailbox. Read the held line and commit before this turn ends."""
+) -> bool:
+    """Hold is in the mailbox. True once the booking is committed. Read the held line and commit before this turn ends."""
 
     found = await _await_line(city, message.need_id, chat, "held", f"slot_id={slot}", op="hold")
     if found is None:
         _LOG.info("care.held.missing", extra={"need_id": (message.need_id or "")[:48]})
-        return
+        return False
     reply, fresh = found
     if first_word(reply.text) == "refused":
         await _on_refused(city, reply, fresh, hold_self=hold_self)
-        return
+        return False
     await _on_held(city, reply, fresh)
     hold_id = fields_of(reply.text).get("hold_id", "")
     if not hold_id:
-        return
+        return False
     done = await _await_line(
         city, message.need_id, fresh, "committed", f"booking_id={hold_id}", op="commit"
     )
     if done is None:
         _LOG.info("care.commit.missing", extra={"need_id": (message.need_id or "")[:48]})
-        return
+        return False
     reply, fresh = done
     if first_word(reply.text) == "committed":
         await _on_committed(city, reply, fresh)
-        return
+        return True
     if first_word(reply.text) == "refused":
         await _on_refused(city, reply, fresh, hold_self=hold_self)
+    return False
 
 
 async def _on_held(city: City, message: Message, chat: list[Message]) -> None:

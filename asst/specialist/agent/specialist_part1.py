@@ -349,15 +349,30 @@ async def _on_confirm(
     number = fields.get("prescription_number") or offer.get("prescription_number")
     book_here = hold_self or message.sender.startswith("agent:") or facility == agent
     if book_here:
+        need = message.need_id or ""
+        owner = _SLOT_OWNER.setdefault(slot, need)
+        if owner != need:
+            # Another citizen is booking (or booked) this slot: say so now. Queueing behind
+            # that booking kept the losers silent for 12-17 minutes (Sat 21/11, s2 22 Dec 10:30
+            # confirmed by five citizens), and the Ledger would refuse the hold anyway.
+            if (message.sender.startswith("agent:") and offer_id
+                    and not _we(chat, agent, f"offer_id={offer_id}", to=message.sender, word="cancel")):
+                await _say(city, message.sender, f"cancel offer_id={offer_id} reason=taken")
+            return
         # Level 7: every confirm can arrive twice, at the same moment. One booking per slot:
         # the second turn waits for the first, reads the case again and reuses its hold.
         lock = _SLOT_LOCKS.setdefault(slot, asyncio.Lock())
-        async with lock:
-            try:
-                chat = await city.history(need_id=message.need_id)
-            except CapError:
-                pass
-            await _book_slot(city, message, chat, slot, citizen, number, consent, hold_self)
+        booked = False
+        try:
+            async with lock:
+                try:
+                    chat = await city.history(need_id=message.need_id)
+                except CapError:
+                    pass
+                booked = await _book_slot(city, message, chat, slot, citizen, number, consent, hold_self)
+        finally:
+            if not booked and _SLOT_OWNER.get(slot) == need and not lock.locked():
+                del _SLOT_OWNER[slot]  # hold refused or never answered: the next confirm may try
         return
     if not facility or not citizen:
         return
@@ -366,6 +381,8 @@ async def _on_confirm(
 
 # Slots this process is booking right now (one lock per slot_id).
 _SLOT_LOCKS: dict[str, asyncio.Lock] = {}
+# slot_id -> need_id of the citizen this process is booking it for (kept once committed).
+_SLOT_OWNER: dict[str, str] = {}
 
 
 async def _book_slot(
@@ -377,7 +394,7 @@ async def _book_slot(
     number: str | None,
     consent: str,
     hold_self: bool,
-) -> None:
+) -> bool:
     agent = city.agent_id
     if not _we(chat, agent, f"slot_id={slot}", to=LEDGER, word="hold"):
         parts = ["hold", f"slot_id={slot}"]
@@ -387,8 +404,8 @@ async def _book_slot(
             parts.append(f"prescription_number={number}")
         parts.append(f"consent_ref={consent}")
         if not await _say(city, LEDGER, " ".join(parts)):
-            return
-    await _finish_booking(city, message, chat, slot, hold_self=hold_self)
+            return False
+    return await _finish_booking(city, message, chat, slot, hold_self=hold_self)
 
 
 async def _forward_confirm(
