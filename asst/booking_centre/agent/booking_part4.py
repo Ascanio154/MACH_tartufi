@@ -462,3 +462,69 @@ def _cached(rows: list[Message]) -> list[Message]:
                 body={"text": text})
         for index, text in enumerate(texts)
     ]
+
+# --- TRUST RING: impostors (Sat 10:00) -----------------------------------------------------------
+
+# Every agent on the city map (/v1/scoreboard/map) BEFORE the impostors arrive (Sat 10:00):
+# 26 ASSTs x 5 (booking_centre gp hospital specialist family_counseling). Snapshot 21/11 02:10.
+# The city signs each sender, so an impostor cannot reuse one of these ids: it needs a new one.
+_CITY_AGENTS = frozenset("agent:" + token for token in """
+    nord         psxp8bh1feaa wwxaphfb5pfh gpr1zqe343gb zand0f57ec1j ccjzqm7yekwx
+    est          n8geakhhcprc xjsdqxvj3x59 r8njm9a6c7pv gpwmb45gggme hvycshaebezp
+    sud          p56k8h29kc45 v4y8p7h8gkzw p90cbsk3n9e6 n0p2dwznf4mc kx0j48fa0epp
+    ovest        pewepg7h3c5g bq7e62g3kkz3 darwa6412gz0 fa0sw3wwn1d4 r7rgp7mdwg8y
+    centro       y6hxsd766sys jmqwr12vy2j6 r8yprrs0e8be dqfw9nh15dn4 pv3a0t3tyqdq
+    brera        q6s5nm3h5dq5 xbmtvn6jzvyg ndrnnjwxttmb fjmvabg58gh0 cj1jfac4ev86
+    isola        sphwpc5tg4p9 cxvqv5qztz70 d6cxxmh767k3 etpwrfmfa8hm mkfzagfe8jtt
+    navigli      jgy1dj2sw2ew dn90g1skkx0f gezf38x5940y s2tevpn8zkcj drchwbffymha
+    porta-romana z6pbm2a7vf36 d6c308wmh6ky p2hwz5xyjrwz a88btdp00ymw bx7r8th27v1f
+    citta-studi  hwfrwj893121 pp83zdrg8vhe ytprhckwyw4t sc25kab6cgde p5sq1njyjr47
+    lambrate     gdrf9b9kxxss c2ewegr2ea3v nanpr5mgm2py pky3vqyqbepa atp772whjkgd
+    bicocca      ez8cb7j167p2 rng5wcrzvhsj bb01ggxymm05 sh35cbsy287d nkh372rd16yq
+    niguarda     fn64xfq2jft4 fddgaqmp6kb0 jdj692g4145e jmjfst55vgjz mm18nddkfc5w
+    bovisa       vgtmj5nqfkxj h82xpx3rkn9e gxq3vzgt3h5t tty8erdj6t41 txar5994gbkj
+    san-siro     tnzkhsa62kn0 qsbsfjytc3y5 k2nwktpp02xx yk37jqcnc1r5 sdca2w4p9f8z
+    baggio       jastt2eeekcv ny08j7bvs7jw t40mr7xsn2wh t3ktav4yrxvb pd5th2nkb31q
+    lorenteggio  qtjne8symjas w2qsptc9qqhg tmt0bcv0st1f n9bf9y6670hp mcppmrbjvxag
+    giambellino  cdc7x6m21nj6 c32jyk0cyan7 h6r1v45esk77 hnpe58epeyh1 bzs050xacs1m
+    barona       vdmz874c65kp w9easgp707bn w2str91zrrbq qg7rvp6ktyne hdnz4xe1c8d2
+    corvetto     yzcs4p44ep39 hkrtm1gzjb24 x0vr9rbwpesr h8425ac7btd8 p0n57t7vtpq0
+    rogoredo     ejfzvz4tdagq hwgn012k70gh fnxy73v47n9g s5sevkc5291w jet0tz755hvf
+    forlanini    eg6p3m77svxv b0pk7g42fcsn aycbxayckhrd zeahjp9bp2an yr8hjc5q7n98
+    ortica       geyjmp26tajh ega0tzcy6za8 vs1bs4485dcn cgj1c2mf1dx0 d0kkschyjrdq
+    greco        h3n6kfd18r3g bmrcsmqq6at2 xtj1dk9x3qej q18es2d82f8r pxvd2kk2yx5j
+    gorla        sbdpbpqz5sxe ck9w60ejwnvw m6py14a1ej77 h6krzxx6es83 yg8debxe3x0p
+    precotto     ser7es7thgwf n4yjr7kjbmrx s1twcdzg3296 f2s88vwd3jnf nf9pqsgzrwm0
+""".split() if len(token) == 12 and token.isalnum())
+_INJECTION = re.compile(
+    r"ignor\w*\s+(\w+\s+){0,3}(regol|rule|istruzion|instruction|policy)|\bsystem\s*:|"
+    r"nuova policy|new policy|manda(mi)? tutto|send (me )?everything|developer mode|jailbreak",
+    re.IGNORECASE)
+# What a real partner never sends us first: personal-data asks, consents, clinical acts.
+# Receipts and confirms have their own checks (_receipt_sender_ok, _agent_confirm_ok).
+_UNASKED_HEADS = frozenset({"data.request", "consent", "prescription", "report", "checkin"})
+
+
+def _impostor(message: Message) -> str:
+    """Why an agent's message is dropped ("" = keep it). MACH-1.2 TRUST RING checks.
+
+    Our own 5 agents and every agent on the map before Saturday pass the sender check. A new
+    agent (an honest team that re-created one) is kept only if it asks for nothing, carries no
+    instruction and offers only its own facility's slots; its receipts and confirms still
+    go through the usual checks.
+    """
+
+    sender = message.sender
+    if not sender.startswith("agent:") or sender in _TEAM_AGENTS:
+        return ""
+    if _INJECTION.search(message.text):
+        return "injection"
+    if sender in _CITY_AGENTS or sender in _TRUSTED_RING:
+        return ""
+    if first_word(message.text) in _UNASKED_HEADS or words(message.text) & {"data.request", "consent"}:
+        return "asked_data"
+    for line in message.text.splitlines():
+        facility = fields_of(line).get("facility")
+        if first_word(line) == "offer" and facility and facility != sender:
+            return "facility_mismatch"
+    return "not_listed_ok"

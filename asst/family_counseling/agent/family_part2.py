@@ -623,6 +623,8 @@ async def _family_cross_search(
             found, reason = [], "index_unavailable"
         peers = {peer.agent_id: peer for peer in found
                  if peer.agent_id != city.agent_id and _FAMILY_CAPABILITY in peer.capabilities}
+        # TRUST RING: consultori on the city map before the impostors; a stranger only if none.
+        peers = {key: peer for key, peer in peers.items() if key in _CITY_AGENTS} or peers
         # MACH-1.2 search criteria (days, doctor gender, a rare language): never citizen,
         # prescription, address or profile.
         wanted = _family_preferences(state.rows, citizen)

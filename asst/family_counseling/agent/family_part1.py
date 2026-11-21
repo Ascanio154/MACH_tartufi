@@ -541,6 +541,11 @@ def _facility_turn(message: Message) -> bool:
 
 async def _family(city: City, message: Message, chat: list[Message]) -> None:
     """Serialize the whole direct-access journey, including Ledger push and polling."""
+    suspect = _family_impostor(city, message, chat)
+    if suspect:
+        # TRUST RING: never answered, never obeyed, never given data. Logged for ring.alert.
+        _LOG.info("family.ring.alert suspect=%s reason=%s", message.sender, suspect)
+        return
     key = (city.agent_id, message.need_id or message.msg_id)
     state = _FAMILY_CASES.setdefault(key, _FamilyCase())
     _FAMILY_CASES.move_to_end(key)

@@ -357,6 +357,8 @@ async def _partner_peers(
         and peer.agent_id not in _TEAM_AGENTS
         and (not peer.capabilities or capability in tuple(peer.capabilities))
     ]
+    # TRUST RING: only agents on the city map before the impostors; a stranger only if no one else.
+    keep = [peer for peer in keep if peer.agent_id in _CITY_AGENTS] or keep
     keep.sort(key=lambda peer: district is None or peer.district != district)
     # MACH-1: published ring partners first, and for a rare language the ASST whose h3 speaks it.
     keep.sort(key=lambda peer: peer.agent_id not in _TRUSTED_RING)

@@ -25,6 +25,11 @@ async def _desk(
         return
     chat = _cached(chat)
     _TURN_END.set(time.monotonic() + _TURN_BUDGET)
+    suspect = _impostor(message)
+    if suspect and suspect != "not_listed_ok":
+        # TRUST RING: never answered, never obeyed, never given data. Logged for ring.alert.
+        _LOG.info("care.ring.alert suspect=%s reason=%s", message.sender, suspect)
+        return
     if fixed is None and message.sender.startswith("agent:") and _partner_request(message):
         # MACH-1: first answer to a partner within 10 s; a plain "received" if the Ledger is slow.
         turn = asyncio.ensure_future(
