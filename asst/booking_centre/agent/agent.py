@@ -368,6 +368,7 @@ _TRUSTED_RING = frozenset({
     "agent:ez8cb7j167p2", "agent:bb01ggxymm05", "agent:sh35cbsy287d",  # Bicocca
     "agent:vgtmj5nqfkxj", "agent:gxq3vzgt3h5t", "agent:tty8erdj6t41",  # Bovisa
     "agent:etpwrfmfa8hm",  # Isola (specialist)
+    "agent:yzcs4p44ep39", "agent:x0vr9rbwpesr", "agent:h8425ac7btd8", "agent:p0n57t7vtpq0",  # Corvetto
 })
 # Rare language of h3 -> that ASST's hospital (published ids only): asked first.
 _LANG_HOSPITAL = {
@@ -375,6 +376,7 @@ _LANG_HOSPITAL = {
     "ja": "agent:nanpr5mgm2py",  # Lambrate
     "ur": "agent:gpr1zqe343gb",  # Nord
     "ti": "agent:bb01ggxymm05",  # Bicocca
+    "fr": "agent:x0vr9rbwpesr",  # Corvetto
 }
 # MACH-1 cancel reasons between agents; anything else is sent as hold_refused.
 _RING_REASONS = frozenset({"no_availability", "facility_unavailable", "rule_p2_no_consent",
