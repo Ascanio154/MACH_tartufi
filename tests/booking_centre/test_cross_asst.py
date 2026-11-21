@@ -918,3 +918,18 @@ class GenderFromRefusal(_Fresh):
         chat = booking_chat() + [msg(CIT, "Non posso. cancel offer_id=of-W01QQQ-asst-greco-h1-20261221-1030 reason=gender", AGENT)]
         self.assertEqual(bc._gender(chat), "m")           # h1 is a woman
         self.assertIsNone(bc._gender(booking_chat()))
+
+
+class RealRefusalReason(_Fresh):
+    async def test_an_expired_hold_is_not_an_expired_prescription(self) -> None:
+        from tests.booking_centre.test_quick_wins import run_advance
+        city = FakeCity(booking_chat())
+        await run_advance(city)
+        cancel = msg(HOSP, "cancel offer_id=of-S-1 reason=ledger.expired", AGENT)
+        city.chat.append(cancel)
+        city.inbound = cancel
+        await bc._desk(city, cancel, list(city.chat), hold_self=False, fixed=None)
+        to_citizen = city.sent_to(CIT)
+        cancels = [t for t in to_citizen if t.startswith("cancel ")]
+        self.assertIn("reason=lease_expired", cancels[0].split())
+        self.assertFalse([t for t in to_citizen if "prescription_renewal" in t])

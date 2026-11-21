@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+# Refusal codes of the booking ring: passed to the citizen as they are.
+_RING_REASONS = frozenset({"past", "taken", "lease_expired", "outside_window", "no_availability"})
+
+
 async def _partner_cancel(
     city: City, message: Message, chat: list[Message], *, fixed: str | None
 ) -> None:
@@ -43,8 +47,18 @@ async def _partner_cancel(
     # number again books an expired prescription, so send the citizen to the GP instead.
     if not offer_id:
         return  # a cancel naming no offer of ours: nothing to withdraw
-    expired = "EXPIR" in fields.get("reason", "").upper()
-    reason = "prescription_expired" if expired else "facility_cancelled"
+    # Only an expired PRESCRIPTION sends the citizen back to the GP. A hold whose lease expired
+    # (the Ledger's "ledger.expired", our facilities pass the code through) is a lost slot: the
+    # citizen gets the real reason and new slots, not a renewal request (Sat 05:30: 6 holds,
+    # all expired, and citizens asked to renew a valid prescription).
+    raw = fields.get("reason", "").lower()
+    expired = "expir" in raw and "prescription" in raw
+    if expired:
+        reason = "prescription_expired"
+    elif raw in _RING_REASONS:
+        reason = raw
+    else:
+        reason = "lease_expired" if "expir" in raw else "facility_cancelled"
     refused = _find_offer(chat, city.agent_id, offer_id)
     if refused.get("doctor_id"):
         when = refused.get("agenda_date") or refused.get("at", "")
