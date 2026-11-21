@@ -375,3 +375,87 @@ def _needs_access(chat: list[Message]) -> bool:
 
     return any(row.sender.startswith("citizen:") and _ACCESS_WORDS.search(row.text)
                for row in chat)
+
+
+# --- Ledger answers shared between cases ----------------------------------------------------------
+# Every case used to wait for four Ledger answers (referral, agenda, rules, world) and the first
+# offer came minutes later, after the slots inside the priority window had gone by. The referral is
+# still checked for every case. The agenda clock is computed from the last answer (it runs 60 times
+# faster than real time and has no weekend) and a world page read seconds ago for the same
+# procedure is used again; _USED and _SHOWN keep the slots we already gave away out of it.
+_AGENDA: list[datetime] = []  # [agenda time in the Ledger's answer, real time of that answer]
+_WORLD: dict[str, dict[int, tuple[datetime, str]]] = {}  # procedure -> page -> (real time, text)
+_AGENDA_FOR, _WORLD_FOR = 300.0, 90.0  # seconds a cached answer is used for
+_BORN: dict[str, datetime] = {}  # need -> the agenda time we first saw for it
+
+
+def _age(at: datetime) -> float:
+    return (datetime.now(timezone.utc) - at).total_seconds()
+
+
+def _learn(rows: list[Message]) -> None:
+    """Remember the agenda and world answers in ``rows`` by the real time the Ledger sent them."""
+
+    for row in rows:
+        if row.sender != LEDGER or row.msg_id.startswith("cache-") or not row.sent_at:
+            continue
+        try:
+            at = datetime.fromisoformat(row.sent_at.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if at.tzinfo is None:
+            continue
+        head = first_word(row.text)
+        if head == "agenda":
+            when = _when(fields_of(row.text).get("agenda_now", ""))
+            if when is not None and (not _AGENDA or at > _AGENDA[1]):
+                _AGENDA[:] = [when, at]
+        elif head == "slots" and row.text:
+            procedure = fields_of(row.text.splitlines()[0]).get("procedure", "")
+            pages = _WORLD.setdefault(procedure, {})
+            page = _page(row.text)[0]
+            if procedure and (page not in pages or at > pages[page][0]):
+                pages[page] = (at, row.text)
+
+
+def _agenda_guess() -> datetime | None:
+    """The agenda time now, from the last answer: 60 agenda seconds per real second, no weekend."""
+
+    if not _AGENDA or not 0 <= _age(_AGENDA[1]) <= _AGENDA_FOR:
+        return None
+    guess = _AGENDA[0] + timedelta(seconds=60 * _age(_AGENDA[1]))
+    return guess + timedelta(days=2) if guess.weekday() >= 5 else guess
+
+
+def _agenda_stale() -> bool:
+    """True when the next case should ask the Ledger again (the answer is not waited for)."""
+
+    return not _AGENDA or not 0 <= _age(_AGENDA[1]) <= _AGENDA_FOR / 2
+
+
+def _world_cached(procedure: str, limit: float = _WORLD_FOR) -> list[str]:
+    pages = _WORLD.get(procedure, {})
+    return [pages[page][1] for page in sorted(pages) if 0 <= _age(pages[page][0]) <= limit]
+
+
+def _cached(rows: list[Message]) -> list[Message]:
+    """``rows`` plus the agenda and world answers another case just read, when this one lacks them."""
+
+    _learn(rows)
+    need = next((row.need_id for row in rows if row.need_id), None)
+    texts: list[str] = []
+    if not _has_agenda(rows):
+        guess = _agenda_guess()
+        if guess is not None:
+            texts.append("agenda agenda_now=" + guess.isoformat())
+    procedure = (_ledger(rows, "prescription") or {}).get("procedure", "")
+    if procedure and _latest_slots(rows) is None:
+        texts += _world_cached(procedure)
+    if not texts:
+        return rows
+    _LOG.info("care.cache %s", " ".join(text.split()[0] for text in texts))
+    return list(rows) + [
+        Message(type="chat", sender=LEDGER, msg_id=f"cache-{index}", need_id=need,
+                body={"text": text})
+        for index, text in enumerate(texts)
+    ]

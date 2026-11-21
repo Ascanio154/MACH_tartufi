@@ -166,10 +166,16 @@ _BORN_MARGIN = timedelta(hours=2)
 def _born(chat: list[Message]) -> datetime | None:
     """Agenda time of our first read for this case: the closest we see to the referral's issue."""
 
+    need = next((row.need_id for row in chat if row.need_id), "") or ""
     for row in chat:
         if row.sender == LEDGER and first_word(row.text) == "agenda":
-            return _when(fields_of(row.text).get("agenda_now", ""))
-    return None
+            seen = _when(fields_of(row.text).get("agenda_now", ""))
+            if seen is not None and (need not in _BORN or seen < _BORN[need]):
+                if len(_BORN) > _SENT_NEEDS:
+                    _BORN.clear()
+                _BORN[need] = seen
+            break
+    return _BORN.get(need)
 
 
 def _reserve_open(chat: list[Message]) -> bool:
@@ -307,7 +313,7 @@ def _own_facilities(chat: list[Message]) -> set[str]:
             facility = fields_of(line).get("facility") if "slot_id=" in line else None
             if facility:
                 found.add(facility)
-    return found
+    return found | _TEAM_AGENTS  # a case served from the shared world page has no page of its own
 
 
 def _district(chat: list[Message]) -> int | None:

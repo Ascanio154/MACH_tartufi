@@ -201,6 +201,7 @@ async def _advance_alone(
     avoid: str | None = None,
 ) -> None:
     agent = city.agent_id
+    chat = _cached(chat)
     citizen = _citizen(chat)
     if citizen is None:
         return
@@ -267,7 +268,7 @@ async def _advance_alone(
                 return
             if row is None and _rx_asked(chat, agent, number) < 0:
                 await _say(city, LEDGER, f"prescription prescription_number={number}")
-            if not _exact(chat, agent, "agenda"):
+            if not _exact(chat, agent, "agenda") and _agenda_stale():
                 await _say(city, LEDGER, "agenda")
             # The rules in force ride along with the first reads; nothing waits on them.
             if not _exact(chat, agent, "rules"):
@@ -288,13 +289,16 @@ async def _advance_alone(
         agenda = _ledger(chat, "agenda")
         now = _when("" if agenda is None else agenda.get("agenda_now", ""))
         world = _latest_slots(chat)
+        start = _TODAY_PAGE.get(procedure, 1)  # where the last case found today's slots
         if now is not None and world is not None:
+            if not _world_cached(procedure, _WORLD_FOR / 2) and not _asked(chat, agent, procedure, start):
+                # Served from a page read a while ago: ask again for the next case, no waiting.
+                await _say(city, LEDGER, f"world procedure={procedure} page={start}")
             break
         if _pass == 2:
             return
         if now is None and not _exact(chat, agent, "agenda"):
             await _say(city, LEDGER, "agenda")
-        start = _TODAY_PAGE.get(procedure, 1)  # where the last case found today's slots
         if world is None and not _asked(chat, agent, procedure, start):
             await _say(city, LEDGER, f"world procedure={procedure} page={start}")
         chat = await _until(

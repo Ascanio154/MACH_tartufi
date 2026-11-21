@@ -16,7 +16,7 @@ import re
 import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from city_sdk.city import (
@@ -669,7 +669,7 @@ async def _until(
     tries = tries or _PULL_TRIES
     for attempt in range(tries):
         try:
-            fresh = await city.history(need_id=need_id)
+            fresh = _cached(await city.history(need_id=need_id))
         except CapError:
             fresh = chat
         if ready(fresh):

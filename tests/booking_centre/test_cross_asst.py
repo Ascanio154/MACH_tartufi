@@ -812,3 +812,43 @@ class SlowLedger(_Fresh):
         await citizen_says(city, full[0].text)
         self.assertTrue(offer_messages(city), city.sent_to(CIT))
         self.assertEqual(len([t for t in city.sent_to(CIT) if "sto verificando" in t]), 0)
+
+
+class SharedLedgerAnswers(_Fresh):
+    def stamped(self, chat: list[Message], seconds_ago: float) -> list[Message]:
+        import datetime as dt
+        at = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=seconds_ago)).isoformat()
+        return [Message(type=row.type, sender=row.sender, msg_id=row.msg_id, need_id=row.need_id,
+                        recipient=row.recipient, body=dict(row.body),
+                        sent_at=at if row.sender == bc.LEDGER else "") for row in chat]
+
+    async def test_next_case_asks_only_for_the_referral(self) -> None:
+        bc._learn(self.stamped(booking_chat(), 5))            # another case read these 5 s ago
+        full = booking_chat()
+        rx = next(row for row in full if row.sender == bc.LEDGER and row.text.startswith("prescription"))
+
+        class OnlyRx(PartnerCity):
+            async def say(self, to, text, *, status=None):
+                out = await super().say(to, text, status=status)
+                if to == bc.LEDGER and text.startswith("prescription "):
+                    self.chat.append(rx)                     # the Ledger answers the referral only
+                return out
+
+        city = OnlyRx([full[0]], peers=[])
+        await citizen_says(city, full[0].text)
+        self.assertTrue(offer_messages(city), city.sent_to(CIT))
+        asked = city.sent_to(bc.LEDGER)
+        self.assertIn(f"prescription prescription_number={RX}", asked)
+        self.assertFalse([text for text in asked if text == "agenda" or text.startswith("world")])
+
+    async def test_old_answers_are_not_used(self) -> None:
+        bc._learn(self.stamped(booking_chat(), 3600))
+        self.assertIsNone(bc._agenda_guess())
+        self.assertEqual(bc._world_cached("VIS-FIS"), [])
+
+    async def test_agenda_clock_runs_sixty_times_faster_and_skips_the_weekend(self) -> None:
+        import datetime as dt
+        real = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=120)
+        bc._AGENDA[:] = [bc._when("2026-11-27T23:00:00+00:00"), real]   # Friday 23:00, 2 min ago
+        guess = bc._agenda_guess()
+        self.assertEqual((guess.weekday(), guess.hour), (0, 1))           # Monday 01:00
