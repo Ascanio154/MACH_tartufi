@@ -862,6 +862,8 @@ async def _forward_receipt(city: City, message: Message, chat: list[Message]) ->
         city, citizen, f"booking.receipt booking_id={booking_id} ledger_ref={ledger_ref} {sentence}"
     ):
         _RECEIPTS.discard(booking_id)
+        return
+    await _release_leases(city, chat, message.need_id or message.msg_id, message.sender)
 
 
 _GP_AGENT = "agent:bmrcsmqq6at2"  # our GP: it tells us about each new prescription

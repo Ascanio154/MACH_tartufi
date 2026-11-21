@@ -117,6 +117,24 @@ async def _partner_retry(
         await _close_search(city, rows, agent, citizen, key)
 
 
+async def _release_leases(city: City, chat: list[Message], key: str, booked_at: str) -> None:
+    """MACH-1.3: the citizen is booked, so the slots other ASSTs still keep for this search go
+    back at once. Only to who wrote ``lease_s=`` in its offer (it knows the act), once per case.
+    """
+
+    entry = _sent(key)
+    token = f"request_id=x-{key}"
+    if "released" in entry.offers:
+        return
+    entry.offers.add("released")
+    leasing = {row.sender for row in chat
+               if row.sender.startswith("agent:") and row.sender != booked_at
+               and "offer" in words(row.text) and "lease_s=" in row.text
+               and token in row.text.split()}
+    for partner in sorted(leasing):
+        await _send(city, partner, f"release mach={_MACH} {token}")
+
+
 # --- facility ----------------------------------------------------------------------------------
 
 

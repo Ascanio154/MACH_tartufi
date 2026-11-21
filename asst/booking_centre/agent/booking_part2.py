@@ -100,6 +100,12 @@ async def _desk_turn(
                               body={"text": f"cancel request_id=x-{key} reason=no_availability"})
             await _partner_cancel(city, refusal, chat, fixed=fixed)
         return
+    if agent_turn and head == "release":
+        # MACH-1.3: an asker gives back the slots we kept for its request. Nothing to answer.
+        mine = f"ring:{message.sender}|{fields_of(message.text).get('request_id', '')}"
+        for slot_id in [sid for sid, (_at, who) in _SHOWN.items() if who == mine]:
+            del _SHOWN[slot_id]
+        return
     if agent_turn and fixed is None and _partner_request(message):
         await _answer_partner(city, message, chat)
         return

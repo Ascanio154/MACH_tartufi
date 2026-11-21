@@ -424,6 +424,21 @@ class ConfirmWithoutOwnHistory(_Fresh):
         self.assertIn("slot_id=A", sent[0].split())
 
 
+class ReleaseAfterBooking(_Fresh):
+    async def test_booked_citizen_releases_the_other_leases(self) -> None:
+        city = await asked_city()
+        tail = f" lease_s=900 mach=1.4 request_id=x-{NEED}"
+        await partner_says(city, PX1, VALID_A + tail)
+        await partner_says(city, PX2, VALID_B + f" request_id=x-{NEED}")  # MACH-1.2: no lease
+        await partner_says(city, PX3, VALID_C.replace("p-C", "q-C") + tail)
+        bc._CONFIRMED_TO.add((NEED, PX3))
+        receipt = "booking.receipt booking_id=bk-1 ledger_ref=lr-1"
+        await partner_says(city, PX3, receipt)
+        await partner_says(city, PX3, receipt)
+        released = [(to, text) for to, text in city.attempts if text.startswith("release ")]
+        self.assertEqual(released, [(PX1, f"release mach=1.4 request_id=x-{NEED}")])
+
+
 class ReceiptOnce(_Fresh):
     async def test_receipt_forwarded_once_without_own_history(self) -> None:
         # Journey 000098: the citizen got the same booking.receipt twice in the same second.

@@ -333,6 +333,15 @@ class OtherAsstsAskUs(_Fresh):
         self.assertNotIn("lease_s", " ".join(second))
         self.assertFalse(any(who.startswith("ring:agent:plain") for _, who in bc._SHOWN.values()))
 
+    async def test_release_gives_the_leased_slots_back(self) -> None:
+        city = PartnerCity(partner_case())
+        await desk(city, msg(PARTNER, "need.request procedure=VIS-FIS priority=D mach=1.3 "
+                                      "request_id=l1", AGENT))
+        self.assertTrue(bc._SHOWN)
+        await desk(city, msg(PARTNER, "release mach=1.3 request_id=l1", AGENT))
+        self.assertFalse(bc._SHOWN)
+        self.assertEqual(len(city.sent_to(PARTNER)), 1)  # the offer only: a release gets no reply
+
     async def test_our_citizen_comes_before_a_lease(self) -> None:
         city = PartnerCity(booking_chat())
         for slot_id in ("S-3", "S-4", "S-5", "S-6", "S-7", "S-8"):
