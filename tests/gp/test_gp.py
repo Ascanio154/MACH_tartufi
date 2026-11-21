@@ -170,11 +170,25 @@ class Sentence(unittest.TestCase):
         self.assertTrue(
             self.said(llm=CapError("UPSTREAM_TIMEOUT", "x")).endswith(gp._rx_note("VIS-FIS", "B"))
         )
-        old, gp._LLM_WAIT = gp._LLM_WAIT, 0.05
+        old, gp._KIND_WAIT = gp._KIND_WAIT, 0.05
         try:
             self.assertTrue(self.said(wait=1.0).endswith(gp._rx_note("VIS-FIS", "B")))
         finally:
-            gp._LLM_WAIT = old
+            gp._KIND_WAIT = old
+
+    def test_model_waits_stay_short(self):
+        # Journeys: the GP answered after 2-3 minutes and slots expired (reason=past).
+        self.assertLessEqual(gp._KIND_WAIT, 3.0)
+        self.assertLessEqual(gp._CLASSIFY_WAIT, 8.0)
+
+    def test_slow_classifier_asks_instead_of_waiting(self):
+        old, gp._CLASSIFY_WAIT = gp._CLASSIFY_WAIT, 0.05
+        try:
+            city = FakeCity(llm="SYM-BACK", wait=1.0)
+            turn(city, CIT, "Buongiorno dottore, ho un fastidio strano da qualche giorno")
+            self.assertEqual(to(city, CIT), [gp._ASK_SYMPTOM])
+        finally:
+            gp._CLASSIFY_WAIT = old
 
     def test_english_citizen_gets_the_english_standard_sentence(self):
         for text in (

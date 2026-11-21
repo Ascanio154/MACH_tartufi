@@ -91,7 +91,7 @@ async def _classify(city: City, text: str) -> str | None:
                     {"role": "user", "content": f"Messaggio: <<<{text[:600]}>>>"},
                 ]
             ),
-            _LLM_WAIT,
+            _CLASSIFY_WAIT,
         )
         raw = answer.get("content")
     except Exception as err:  # no model: the citizen is asked to say more instead
@@ -237,7 +237,7 @@ async def _kind(city: City, said: str, procedure: str, priority: str, renewed: b
                     {"role": "user", "content": f"Messaggio del cittadino: <<<{said[:600]}>>>"},
                 ]
             ),
-            _LLM_WAIT,
+            _KIND_WAIT,
         )
         line = _clean(answer.get("content"))
     except Exception as err:  # the sentence is optional, the prescription is not
