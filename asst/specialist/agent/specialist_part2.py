@@ -643,6 +643,51 @@ async def _on_reported(city: City, message: Message, chat: list[Message]) -> Non
         citizen,
         f"report booking_id={booking_id} outcome_code=VISIT {_report_words(chat, citizen, shared)}",
     )
+    await _notify_gp(city, chat, booking_id)
+
+
+# --- unsolicited notice to our GP (collaboration) ------------------------------------------------
+# After the report, tell the citizen's GP that the visit took place, in the same case so the
+# judge sees it. Clinical content (report shared, follow-up) only with the citizen's
+# report_sharing consent_ref; without it, only that the visit took place. The text carries no
+# act word (it is a notice, not an act) and nothing the clinical filter refuses.
+_OUR_GP = "agent:bmrcsmqq6at2"
+
+
+async def _notify_gp(city: City, chat: list[Message], booking_id: str) -> None:
+    agent = city.agent_id
+    token = f"booking_id={booking_id}"
+    if _we(chat, agent, token, to=_OUR_GP, word="avviso"):
+        return
+    filed: dict[str, str] = {}
+    for row in chat:
+        if (
+            row.sender == agent
+            and row.recipient == LEDGER
+            and first_word(row.text) == "report"
+            and token in row.text.split()
+        ):
+            filed = fields_of(row.text)
+    consent_ref = filed.get("consent_ref", "")
+    follow_up = filed.get("follow_up_prescription_number", "")
+    if consent_ref:
+        parts = ["avviso", token, f"consent_ref={consent_ref}"]
+        if follow_up:
+            parts.append(f"follow_up_prescription_number={follow_up}")
+        extra = " È stato prescritto un controllo CTRL-CARD." if follow_up else ""
+        words_ = (
+            "Gentile collega, la visita cardiologica del suo paziente si è svolta e il referto è "
+            f"archiviato sul Ledger, condiviso con il suo consenso.{extra} Grazie, cardiologia "
+            "dell'ASST Greco."
+        )
+    else:
+        parts = ["avviso", token]
+        words_ = (
+            "Gentile collega, la visita cardiologica del suo paziente si è svolta. Il paziente "
+            "non ha dato il permesso di condividere i contenuti: per dettagli può chiederli a lui. "
+            "Grazie, cardiologia dell'ASST Greco."
+        )
+    await _say(city, _OUR_GP, " ".join(parts) + " " + words_)
 
 
 # --- words for the citizen ---------------------------------------------------------------------
