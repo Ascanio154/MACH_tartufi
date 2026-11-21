@@ -911,3 +911,10 @@ class TrustRing(_Fresh):
         city = PartnerCity(booking_chat(slots=PAST_ONLY), peers=found)
         await advance(city)
         self.assertEqual({to for to, _ in requests(city)}, {self.REAL})
+
+
+class GenderFromRefusal(_Fresh):
+    async def test_a_gender_refusal_tells_the_preference(self) -> None:
+        chat = booking_chat() + [msg(CIT, "Non posso. cancel offer_id=of-W01QQQ-asst-greco-h1-20261221-1030 reason=gender", AGENT)]
+        self.assertEqual(bc._gender(chat), "m")           # h1 is a woman
+        self.assertIsNone(bc._gender(booking_chat()))

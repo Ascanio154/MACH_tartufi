@@ -596,6 +596,15 @@ def _gender(chat: list[Message]) -> str | None:
         raw = (said.get("gender_preference") or said.get("gender") or "").lower()[:1]
         if raw in {"m", "f"}:
             found = raw
+    if found is None:
+        # Level 8: the preference is never said, only "cancel offer_id=...-h1-... reason=gender".
+        # The doctor refused tells it (journey 03180006: the same doctor was offered again).
+        for row in chat:
+            if row.sender.startswith("citizen:") and "reason=gender" in row.text.split():
+                hit = re.search(r"-([a-z]\d)-", fields_of(row.text).get("offer_id", ""))
+                spec = _DOCTORS.get(hit.group(1)) if hit else None
+                if spec is not None:
+                    found = "m" if spec[1] == "f" else "f"
     return found
 
 
