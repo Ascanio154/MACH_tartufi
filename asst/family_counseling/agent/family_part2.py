@@ -185,6 +185,8 @@ async def _family_receipt(city: City, state: _FamilyCase, citizen: str) -> bool:
         )
         if location:
             phrase += " " + location
+        english = _family_preferences(state.rows, citizen).get("lang", "it") == "en"
+        phrase += _family_receipt_extras(await _family_desk_told(city, state, row), english)
         await _family_send(city, state, citizen,
                            f"booking.receipt booking_id={booking} ledger_ref={ref}\n{phrase}")
         return True
@@ -691,3 +693,34 @@ async def _family_cross_search(
     await _family_send(city, state, citizen, "offer available=false reason=no_matching_slots\n" + phrase)
 
 
+
+
+async def _family_desk_told(city: City, state: _FamilyCase, committed: Message) -> bool:
+    """Collaboration: our booking centre learns the slot is taken, so it never offers it again.
+
+    The slot only: never the citizen, a name or a reason for the visit.
+    """
+
+    hold = _family_fields(committed).get("hold_id", "")
+    slot = next((_family_fields(row).get("slot_id", "") for row in state.rows
+                 if row.sender == LEDGER and _family_head(row) == "held"
+                 and _family_fields(row).get("hold_id") == hold), "")
+    if not slot or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,80}", slot):
+        return False
+    note = (f"notice slot_booked procedure=CONS-GIN slot_id={slot}\n"
+            "Dal consultorio: questo posto è appena stato prenotato da noi, non proponetelo ad altri.")
+    return await _family_send(city, state, _OUR_BOOKING_CENTRE, note) is not None
+
+
+def _family_receipt_extras(told: bool, english: bool) -> str:
+    """Proactivity: one practical step nobody asked for; collaboration only when it happened."""
+
+    if english:
+        extra = " Bring your health card; no referral is needed at the consultorio."
+        if told:
+            extra += " I have also told our booking centre, so your slot is not offered to anyone else."
+        return extra
+    extra = " Porta la tessera sanitaria; al consultorio non serve la ricetta."
+    if told:
+        extra += " Ho già avvisato anche il centro prenotazioni, così il tuo posto non viene proposto ad altri."
+    return extra

@@ -259,5 +259,29 @@ class MoreHumanAndRing(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(told), 1)  # once per slot
 
 
+class VisibleCollaboration(unittest.IsolatedAsyncioTestCase):
+    """The review reads only the citizen's messages: say what we did for them, only if done."""
+
+    def setUp(self) -> None:
+        fc._FAMILY_CASES.clear()
+
+    async def test_receipt_tells_desk_and_citizen(self) -> None:
+        city = LedgerCity()
+        await citizen_says(city, "Buongiorno, vorrei un appuntamento al consultorio")
+        await citizen_says(city, "prendo la prima, consent_ref=cons-1")
+        receipt = next(t for t in city.to_citizen() if t.startswith("booking.receipt"))
+        self.assertIn("tessera sanitaria", receipt)
+        self.assertIn("Ho già avvisato anche il centro prenotazioni", receipt)
+        told = [row.text for row in city.chat if row.recipient == fc._OUR_BOOKING_CENTRE]
+        self.assertEqual(len(told), 1)
+        self.assertTrue(told[0].startswith("notice slot_booked procedure=CONS-GIN slot_id=G-1"))
+        self.assertNotIn("citizen", told[0])
+        self.assertEqual(fc.understood(msg(AGENT, receipt, CIT)).type, "booking.receipt")
+
+    def test_no_claim_when_the_notice_failed(self) -> None:
+        self.assertNotIn("avvisato", fc._family_receipt_extras(False, False))
+        self.assertIn("health card", fc._family_receipt_extras(False, True))
+
+
 if __name__ == "__main__":
     unittest.main()

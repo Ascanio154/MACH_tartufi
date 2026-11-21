@@ -112,8 +112,17 @@ async def _family_stop_note(city: City, state: _FamilyCase, citizen: str, reason
     if reason not in phrases:
         await _family_note(city, state, citizen, reason)
         return
+    text = phrases[reason][english]
+    if reason == "choice_withdrawn" and getattr(state, "told_booking", False):
+        text += _FAMILY_TOLD_DESK[english]
     await _family_send_base(city, state, citizen,
-                           f"data.response purpose=booking reason={reason}\n{phrases[reason][english]}")
+                           f"data.response purpose=booking reason={reason}\n{text}")
+
+
+# Said to the citizen ONLY after the notice to our booking centre was actually sent.
+_FAMILY_TOLD_DESK = (
+    " Ho già avvisato io il centro prenotazioni che il posto potrebbe liberarsi per altre persone.",
+    " I have already told the booking centre myself that the slot may be free for other people.")
 
 
 async def _family_slot_free(city: City, state: _FamilyCase, citizen: str, message: Message) -> None:
@@ -124,9 +133,11 @@ async def _family_slot_free(city: City, state: _FamilyCase, citizen: str, messag
     if (not slot or offer.get("facility") != city.agent_id
             or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,80}", slot)):
         return
-    await _family_send_base(city, state, _OUR_BOOKING_CENTRE,
+    sent = await _family_send_base(city, state, _OUR_BOOKING_CENTRE,
                            f"notice availability_check procedure=CONS-GIN slot_id={slot}\n"
                            "Una persona ha rinunciato all'offerta. Verificate la disponibilità sul Ledger prima di proporre il posto.")
+    # The review reads only the citizen's messages: the next note to them says we told the desk.
+    state.told_booking = sent is not None
 
 
 async def _family_send(
