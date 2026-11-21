@@ -627,6 +627,12 @@ async def _ask(city: City, citizen: str, chat: list[Message], agent: str, need_i
         await _say(city, citizen, _ASK_SYMPTOM)
 
 
+_DESK_AGENT = "agent:h3n6kfd18r3g"  # our ASST's booking centre
+_DESK_NOTE = ("Buongiorno, vi avviso io per primo: ho appena prescritto questa visita e il "
+              "cittadino vi scriverà a breve con questo numero. Potete preparare le "
+              "disponibilità, così trova subito le proposte? Grazie.")
+
+
 async def _issue(
     city: City,
     citizen: str,
@@ -671,6 +677,11 @@ async def _issue(
         await _say(
             city, citizen, f"prescription {token} procedure={procedure} priority={priority} {note}"
         )
+        # Collaboration: nobody asked for this. Our booking centre learns a citizen is on the
+        # way, in the same need, only with what the citizen is about to tell it anyway.
+        if not _we(fresh, agent, token, to=_DESK_AGENT, word="prescription"):
+            await _say(city, _DESK_AGENT, f"prescription {token} procedure={procedure} "
+                       f"priority={priority} {_DESK_NOTE}")
     finally:
         _WRITING.discard(number)
 

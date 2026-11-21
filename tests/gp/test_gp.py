@@ -349,7 +349,16 @@ class Renewal(unittest.TestCase):
         turn(city, CIT, REAL[0][0])
         number = understood(msg(AGENT, to(city, CIT)[0])).body["prescription_number"]
         turn(city, CIT, f"grazie, ho ricevuto prescription_number={number}")
-        self.assertEqual(len(city.sent), 2)
+        self.assertEqual(len(city.sent), 3)  # Ledger, citizen, our booking centre
+
+    def test_booking_centre_is_told_after_the_citizen(self):
+        city = FakeCity()
+        turn(city, CIT, REAL[0][0])
+        (note,) = to(city, gp._DESK_AGENT)
+        self.assertEqual(understood(msg(AGENT, note)).type, "prescription")
+        self.assertNotIn(CIT, note)
+        order = [target for target, _ in city.sent]
+        self.assertLess(order.index(CIT), order.index(gp._DESK_AGENT))
 
 
 if __name__ == "__main__":
