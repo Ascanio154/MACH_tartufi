@@ -5,7 +5,7 @@
 >
 > **AI:** this brief is your context. Your human is on team **tartufi-pazzi** and may not be very technical: explain briefly in plain words and give exact commands to copy. Follow the rules below; breaking them costs the team points or makes the deploy fail.
 
-Last updated: Sat 21 Nov 2026, 05:05 (owners: booking centre → Asca, GP → Leo's Claude; automatic deploys). Pitch: **Sat 21 Nov, 16:00**.
+Last updated: Sat 21 Nov 2026, 11:10 (only Leo and Asca still working: Asca = booking centre, Leo = GP, hospital, specialist, consultorio). Pitch: **Sat 21 Nov, 16:00**.
 
 ---
 
@@ -20,12 +20,14 @@ The family counselling centre (consultorio) is **direct access**: citizens write
 | folder (in `asst/`) | role on card | capability | owner |
 |---|---|---|---|
 | `gp` | `gp` | `gp` | **Leo** (his Claude, from 21 Nov 04:38) |
-| `specialist` | `facility` | `specialist_care.cardiology` | **Riccardo** |
-| `hospital` | `facility` | `hospital.physiatry` | **Riccardo** |
-| `family_counseling` | `facility` | `family_counseling.gynecology` | **Mattia** (also watches the scoreboard) |
+| `specialist` | `facility` | `specialist_care.cardiology` | **Leo** (from Riccardo, 21 Nov ~11:00) |
+| `hospital` | `facility` | `hospital.physiatry` | **Leo** (from Riccardo, 21 Nov ~11:00) |
+| `family_counseling` | `facility` | `family_counseling.gynecology` | **Leo** (from Mattia, 21 Nov ~11:00) |
 | `booking_centre` | `booking_centre` | `booking_centre` | **Asca** (Leo → Mattia 20 Nov 23:35 → Asca 21 Nov 00:55) |
 
-**Leo's Mac is the only machine that deploys.** It runs `scripts/deploy_runner.py`, which watches `main` and deploys every agent whose folder changed (compile + unit tests + `city run` smoke first, then picks the next version itself and rolls back a front door that goes down). You push; the runner deploys. **Code freeze: 21 Nov 06:00, push by 05:30.**
+**Leo's Mac is the only machine that deploys.** It runs `scripts/deploy_runner.py`, which watches `main` and deploys every agent whose folder changed (compile + unit tests + `city run` smoke first, then picks the next version itself and rolls back a front door that goes down). You push; the runner deploys. Deploy log: GitHub issue #1.
+
+**Since 21 Nov ~11:00 only Leo (with his Claude) and Asca are working.** Riccardo and Mattia stopped; their agents are Leo's now.
 
 ## 2. Current state (already done)
 
@@ -97,28 +99,19 @@ Each item below was checked against the current code.
 - Live: protocol table + red flags (incl. level-8 breathing/fainting as instant regex), P1 renewal, "Ho già avvisato io il centro prenotazioni" in every prescription. `cc53232`: no model call when keywords find the symptom (the model sentence cost 2-3 min under load); the model only classifies free text the keywords miss (4 s cap).
 - Known: ~20% `protocol_mismatch` in the verdicts, but the same text gets opposite verdicts (the judge uses the citizen's hidden profile), so the mapping stays as is. Details in `.deploy/gp-wrong.md` on Leo's Mac.
 
-**Riccardo, specialist (`specialist`), most important**
-- Right now the specialist files the report **immediately** after check-in (`outcome_code=VISIT`), **without asking consent** and **without a follow-up prescription**. Per the guide:
-  1. after check-in: `consent purpose=report_sharing May I share your report?`
-  2. citizen replies `consent consent_ref=<id> purpose=report_sharing` (a plain "no" means file it unshared)
-  3. `report booking_id=… outcome_code=… consent_ref=<id>` to the Ledger
-  4. if the journey needs a follow-up: `prescribe … follow_up_of=<booking_id>` and add `follow_up_prescription_number=…` to the report
-  5. then tell the citizen `report booking_id=… <sentence>`
-- That is "report + follow-up per protocol" (+2, a missing report is −1).
+**Leo, specialist (`specialist`)** and **hospital (`hospital`)**, from Riccardo on 21 Nov ~11:00.
+- Live: answer partner ASSTs' `need.request` with one offer message (up to 3 world pages); natural-language check-in; the specialist files the report even when the citizen doesn't answer the consent question (20 s), no CTRL-CARD follow-up (`b2426f7`: the judge marked those reports not ok); visible collaboration quoted in the citizen's messages.
+- Ledger waits: up to 40 s, one read per second (`73c65fe`: the Ledger answers hold/commit in 15-20 s; renew/ack stay 200).
+- `b479f63`: a confirm for a slot another citizen is already booking gets `cancel offer_id=… reason=taken` to the booking centre at once (before: queued behind the slot lock, the losers heard nothing for 12-17 min). Tests: `tests/facility/`.
 
-**Riccardo, hospital (`hospital`)**
-- The main flow (hold → commit → receipt → check-in) is there. When City Hall takes the hospital down for a day, messages to it fail. Make sure refusals reach the citizen as `cancel reason=<code>` instead of silence.
-
-**Mattia, consultorio (`family_counseling`)**
-- It already books **without** asking for a prescription (+2). Never add a prescription demand (−1).
-- It sends up to **3 separate offer messages**. Combine them into **one** message with all slots (shared code path with the booking centre: `_advance_alone`).
-- Stricter data rules: ask only what's needed, always with `purpose=` (over-disclosure is −2).
-- Watch the scoreboard and post each new level's text in Huddle (`post_note`).
+**Leo, consultorio (`family_counseling`)**, from Mattia on 21 Nov ~11:00.
+- Direct access, never asks for a prescription (+2; demanding one is −1). One offer message, level-8 red flags, `lang=` token wins over a language named in the text, trust ring against impostors.
+- `22ba9cf`: Ledger wait ~20 s (was 3 s → `ledger_timeout`), offers keep 8 agenda hours of margin (were past at the confirm), a confirm on a past slot gets new offers in the same turn. Tests: `tests/family_counseling/`.
 
 **Asca, booking centre (`booking_centre`)**, owner since 21 Nov 00:55 (Leo → Mattia → Asca). Highest priority: it blocks points for everyone (no booking → no check-in, no report, no review).
-- Biggest loss (judge verdicts, 73 journeys 01:45-03:15): `booking_centre.wrong_outcome` no_booking **−48**. The citizen writes last and we never answer: `cancel offer_id=… reason=past` ×20, `reason=lang` ×10, `data.response` ×10, deadline/gender/day ×8, valid `confirm` ×2. The act word comes after a natural-language sentence, so it is not the first word.
-- Fix: answer every citizen cancel in the same turn with ONE new offer that avoids the reason (or a closing message); find the act word anywhere in the text; continue right after `data.response`; re-read agenda before a re-offer.
-- Keep turns short: long in-turn waits make the relay refuse renew/ack (422), as seen on the consultorio.
+- Fixed overnight/this morning: `reason=past` re-offers (agenda time), deadline from the case's first message, `lang=` wins, real cancel reasons, an offered slot stays with that citizen (`10d2aa8`), 20 s turn cap.
+- Biggest loss after the restart (80 journeys, ~08:30-09:40): no_booking **−51**. 32 journeys end on "Purtroppo non ci sono ancora posti adatti…" while the judge counts 104-130 acceptable slots; 9 end on `facility_cancelled` for 18 Dec slots offered on the 22nd. Probable cause: the slot dates/agenda "now" after the ~20-day agenda jump in the pause (check by logging agenda_now next to the first/last slot dates read). Also refusals for day (17) and gender (10).
+- Every message takes ~3.5 real min (= 3.5 agenda hours): keep margins and reservations in minutes, never end on "no slots" (relaxed alternative or partner slots).
 - Ring format agreed on Discord (Giambellino `ka`, Toros, Gorla `sq`): `need.request service_type procedure priority request_id` → one message of `offer … doctor_lang doctor_gender request_id` or `cancel reason=no_availability`. Gotcha: our own sent messages are not reliably in `city.history`; keep in-memory marks too.
 - Designs: `docs/superpowers/specs/2026-11-20-booking-centre-quick-wins-design.md`, `docs/superpowers/specs/2026-11-20-cross-asst-booking-design.md`. Tests: `tests/booking_centre/`.
 
