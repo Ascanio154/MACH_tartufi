@@ -144,7 +144,7 @@ class Sentence(unittest.TestCase):
         return said
 
     def test_model_sentence_follows_the_tokens(self):
-        self.assertTrue(self.said().endswith("priority=B " + GOOD))
+        self.assertTrue(self.said().endswith("priority=B " + gp._COLLAB_IT + " " + GOOD))
 
     def test_unsafe_model_output_falls_back(self):
         bad = [
@@ -351,14 +351,48 @@ class Renewal(unittest.TestCase):
         turn(city, CIT, f"grazie, ho ricevuto prescription_number={number}")
         self.assertEqual(len(city.sent), 3)  # Ledger, citizen, our booking centre
 
-    def test_booking_centre_is_told_after_the_citizen(self):
+    def test_booking_centre_is_told_before_the_citizen(self):
+        # The reviewer only reads the citizen's messages: the GP tells the booking centre
+        # first, so the citizen's prescription can truthfully say it already did.
         city = FakeCity()
         turn(city, CIT, REAL[0][0])
         (note,) = to(city, gp._DESK_AGENT)
         self.assertEqual(understood(msg(AGENT, note)).type, "prescription")
         self.assertNotIn(CIT, note)
         order = [target for target, _ in city.sent]
-        self.assertLess(order.index(CIT), order.index(gp._DESK_AGENT))
+        self.assertLess(order.index(gp._DESK_AGENT), order.index(CIT))
+
+
+class VisibleCollaboration(unittest.TestCase):
+    def test_citizen_hears_the_booking_centre_was_told(self):
+        city = FakeCity()
+        turn(city, CIT, REAL[0][0])
+        (said,) = to(city, CIT)
+        self.assertIn(gp._COLLAB_IT, said)
+        self.assertEqual(understood(msg(AGENT, said)).type, "prescription")
+        self.assertTrue(said.endswith(GOOD), "the model sentence still closes the message")
+
+    def test_english_citizen_hears_it_in_english(self):
+        city = FakeCity(llm="")
+        turn(city, CIT, "Hello doctor, my heart is racing since yesterday, I need a check please.")
+        (said,) = to(city, CIT)
+        self.assertIn(gp._COLLAB_EN, said)
+
+    def test_no_collaboration_claim_when_the_notice_failed(self):
+        class DeskDown(FakeCity):
+            async def say(self, to, text, *, status=None):
+                if to == gp._DESK_AGENT:
+                    raise CapError("TARGET_NOT_VISIBLE", "desk")
+                return await super().say(to, text, status=status)
+        city = DeskDown()
+        turn(city, CIT, REAL[0][0])
+        (said,) = to(city, CIT)
+        self.assertNotIn(gp._COLLAB_IT, said)
+        self.assertEqual(understood(msg(AGENT, said)).type, "prescription")
+
+    def test_collaboration_sentences_hold_no_act_word(self):
+        for line in (gp._COLLAB_IT, gp._COLLAB_EN):
+            self.assertEqual(gp._clean(line), line)
 
 
 if __name__ == "__main__":

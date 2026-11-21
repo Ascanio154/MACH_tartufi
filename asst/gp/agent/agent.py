@@ -631,6 +631,14 @@ _DESK_AGENT = "agent:h3n6kfd18r3g"  # our ASST's booking centre
 _DESK_NOTE = ("Buongiorno, vi avviso io per primo: ho appena prescritto questa visita e il "
               "cittadino vi scriverà a breve con questo numero. Potete preparare le "
               "disponibilità, così trova subito le proposte? Grazie.")
+# The reviewer reads only the citizen's messages: say there that the booking centre was told
+# (collaboration) and add one practical step nobody asked for (proactivity). No clinical advice.
+_COLLAB_IT = ("Ho già avvisato io il centro prenotazioni: sa che le scriverà con questo numero di "
+              "ricetta e sta preparando le disponibilità. Il giorno della visita porti la tessera "
+              "sanitaria e questo numero.")
+_COLLAB_EN = ("I have already told the booking centre myself: they know you will write with this "
+              "prescription number and are preparing the available slots. On the day of the visit, "
+              "bring your health card and this number.")
 
 
 async def _issue(
@@ -674,14 +682,19 @@ async def _issue(
             fresh = chat
         if _we(fresh, agent, token, to=citizen, word="prescription"):
             return
-        await _say(
-            city, citizen, f"prescription {token} procedure={procedure} priority={priority} {note}"
-        )
         # Collaboration: nobody asked for this. Our booking centre learns a citizen is on the
-        # way, in the same need, only with what the citizen is about to tell it anyway.
-        if not _we(fresh, agent, token, to=_DESK_AGENT, word="prescription"):
-            await _say(city, _DESK_AGENT, f"prescription {token} procedure={procedure} "
-                       f"priority={priority} {_DESK_NOTE}")
+        # way, in the same need, only with what the citizen is about to tell it anyway. It goes
+        # first so the citizen's message can truthfully say it was done.
+        told = _we(fresh, agent, token, to=_DESK_AGENT, word="prescription") or await _say(
+            city, _DESK_AGENT, f"prescription {token} procedure={procedure} "
+            f"priority={priority} {_DESK_NOTE}"
+        )
+        collab = (_COLLAB_EN if _english(said) else _COLLAB_IT) + " " if told else ""
+        await _say(
+            city,
+            citizen,
+            f"prescription {token} procedure={procedure} priority={priority} {collab}{note}",
+        )
     finally:
         _WRITING.discard(number)
 
