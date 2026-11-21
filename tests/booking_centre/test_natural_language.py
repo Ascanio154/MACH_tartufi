@@ -317,6 +317,29 @@ class OtherAsstsAskUs(_Fresh):
         self.assertEqual(city.sent_to(PARTNER)[1], "cancel request_id=w2 reason=no_availability "
                                                    "next_free=2026-11-24T09:00:00+01:00")
 
+    async def test_lease_only_for_who_declares_mach(self) -> None:
+        # MACH-1.4 R15, with our cap: 900 s however long the asker wants.
+        city = PartnerCity(partner_case())
+        ask = "need.request procedure=VIS-FIS priority=D "
+        await desk(city, msg(PARTNER, ask + "mach=1.4 lease_s=1800 request_id=l1", AGENT))
+        first = offer_lines(city.sent_to(PARTNER)[0])
+        for line in first:
+            self.assertIn("lease_s=900", line.split())
+        # The next request gets other slots, leased or not; a 1.2 asker gets no lease.
+        await desk(city, msg("agent:plain", ask + "request_id=l2", AGENT))
+        second = offer_lines(city.sent_to("agent:plain")[0])
+        slot_ids = lambda lines: {t for line in lines for t in line.split() if t.startswith("slot_id=")}
+        self.assertFalse(slot_ids(first) & slot_ids(second))
+        self.assertNotIn("lease_s", " ".join(second))
+        self.assertFalse(any(who.startswith("ring:agent:plain") for _, who in bc._SHOWN.values()))
+
+    async def test_our_citizen_comes_before_a_lease(self) -> None:
+        city = PartnerCity(booking_chat())
+        for slot_id in ("S-3", "S-4", "S-5", "S-6", "S-7", "S-8"):
+            bc._SHOWN[slot_id] = (bc.time.monotonic(), "ring:agent:px|r1")
+        await bc._advance_alone(city, city.chat[0], city.chat, city.chat[0].need_id, fixed=None, replacing=False)
+        self.assertTrue(offer_lines(city.sent_to(CIT)[0]))
+
     async def test_no_slot_is_a_cancel(self) -> None:
         case = partner_case()
         case[-1] = msg(LEDGER, "slots procedure=VIS-FIS page=1/1\n" + PAST_ONLY[0], AGENT)

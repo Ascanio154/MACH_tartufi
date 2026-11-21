@@ -355,8 +355,11 @@ async def _advance_alone(
              if _SHOWN.get(slot["slot_id"], (0.0, key))[1] == key
              or clock - _SHOWN[slot["slot_id"]][0] > _SHOWN_FOR]
     # No fallback to a slot another citizen is deciding on: with none of our own left, the
-    # search goes on below (next page, partner ASSTs, relaxed alternative).
-    chosen = apart
+    # search goes on below (next page, partner ASSTs, relaxed alternative). A slot leased to
+    # another ASST's request is different: our citizen comes before a "no slots" here, and the
+    # Ledger decides who holds it first (the partner hears ``taken``, as before the leases).
+    chosen = apart or [slot for slot in chosen
+                       if _SHOWN[slot["slot_id"]][1].startswith("ring:")]
     if avoid and not chosen:
         # The facility is unreachable and nothing else fits here: a partner ASST may have it.
         if fixed is None and await _ask_partners(

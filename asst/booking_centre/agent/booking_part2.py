@@ -673,6 +673,7 @@ def _desk_partner_slots(
     after: datetime | None = None,
     deadline: datetime | None = None,
     open_end: bool = False,
+    skip: frozenset[str] = frozenset(),
 ) -> list[dict[str, str]]:
     """Free slots of any of our facilities inside the priority window, spread, at most six.
 
@@ -701,6 +702,8 @@ def _desk_partner_slots(
         at = _when(slot.get("at", ""))
         if not slot.get("slot_id") or not slot.get("doctor_id") or not slot.get("facility"):
             continue
+        if slot["slot_id"] in skip:
+            continue
         if at is None or slot.get("procedure") not in (None, procedure):
             continue
         free = slot.get("free")
@@ -718,6 +721,25 @@ def _desk_partner_slots(
         timed.append((at, slot))
     timed.sort(key=lambda item: (item[0], item[1]["slot_id"]))
     return _pick([slot for _, slot in timed], days or set())
+
+
+def _lease_for(fields: dict[str, str]) -> int:
+    """Seconds we keep the offered slots for this request: MACH-1.4 R14-R15.
+
+    Only for an asker that declares ``mach=1.3`` or later (it leases its own slots to us too),
+    as long as it asks (default 900) and never longer than our own citizens get (_SHOWN_FOR).
+    """
+    # ponytail: no "three expired leases -> 120 s" (R15); the 900 s cap bounds a careless asker.
+    # Count leases that end without confirm or release per partner if one starts hoarding.
+
+    try:
+        declared = tuple(int(part) for part in fields.get("mach", "").split(".")[:2])
+    except ValueError:
+        return 0
+    if declared < (1, 3):
+        return 0
+    asked = fields.get("lease_s", "")
+    return max(0, min(int(asked) if asked.isdigit() else 900, int(_SHOWN_FOR)))
 
 
 def _ring_when(value: str, now: datetime) -> datetime | None:
@@ -773,7 +795,14 @@ async def _answer_partner(city: City, message: Message, chat: list[Message]) -> 
         await _say(city, partner, f"cancel {token} reason=facility_unavailable")
         return
     lines = [line for line in world.splitlines() if "slot_id=" in line]
-    criteria = {"now": now, "priority": priority, "procedure": procedure,
+    # MACH-1.3 R6: a slot one request is deciding on (a citizen of ours, another ASST's lease)
+    # or already sent for a hold is not offered to a second one.
+    clock = time.monotonic()
+    mine = f"ring:{partner}|{request_id}"
+    held = frozenset(_USED | {sid for sid, (at, who) in _SHOWN.items()
+                              if who != mine and clock - at <= _SHOWN_FOR})
+    lease = _lease_for(fields)
+    criteria = {"now": now, "priority": priority, "procedure": procedure, "skip": held,
                 "lang": fields.get("lang", "").lower(),
                 "gender": fields.get("gender", fields.get("gender_preference", "")).lower()[:1]}
     slots = _desk_partner_slots(
@@ -808,6 +837,8 @@ async def _answer_partner(city: City, message: Message, chat: list[Message]) -> 
             parts += [f"doctor_lang={'/'.join(langs)}", f"doctor_gender={spec[1]}"]
         if priority:
             parts.append(f"priority={priority}")
+        if lease:
+            parts += [f"lease_s={lease}", f"mach={_MACH}"]
         parts.append(token)
         line = " ".join(parts)
         if len("\n".join([*rows, line])) > _MAX_TEXT:
@@ -815,5 +846,9 @@ async def _answer_partner(city: City, message: Message, chat: list[Message]) -> 
         rows.append(line)
     if await _say(city, partner, "\n".join(rows)):
         _OFFERED_TO.update((partner, slot["slot_id"]) for slot in slots)
+        if lease:
+            for slot in slots[:len(rows)]:
+                # Backdated so that _SHOWN_FOR after this mark is ``lease`` seconds from now.
+                _SHOWN[slot["slot_id"]] = (clock - (_SHOWN_FOR - lease), mine)
 
 
