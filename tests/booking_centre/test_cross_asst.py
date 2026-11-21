@@ -354,9 +354,8 @@ class NextSteps(_Fresh):
     async def test_all_partners_no_availability_closes(self) -> None:
         city = await asked_city()
         asked = [to for to, _ in requests(city)]
-        # Partners that stay silent in the ask turn: the citizen hears the outcome at once
-        # (journey 113), and later "no" answers never repeat it.
-        self.assertEqual(len(closing(city)), 1)
+        # Silent partners: no outcome yet. Once every one of them says no, exactly one closing.
+        self.assertEqual(len(closing(city)), 0)
         for peer in asked:
             await partner_says(city, peer, f"cancel request_id=x-{NEED} reason=no_availability")
         self.assertEqual(len(closing(city)), 1)
@@ -441,6 +440,9 @@ class Level4Live(_Fresh):
     async def test_nothing_anywhere_never_waiting_list_for_d(self) -> None:
         # Journeys 116-166: a B/D citizen refuses the waiting list and the journey fails (-1).
         city = await asked_city()
+        # Partners still silent: nothing more in the ask turn, the alternative on the next message.
+        self.assertIn("sto chiedendo", city.sent_to(CIT)[-1])
+        await citizen_says(city, f"need.request prescription_number={RX} lang=it ci siete?")
         self.assertEqual([t for t in city.sent_to(CIT) if "waiting_list=true" in t.split()], [])
         self.assertIn("Continuo a cercare", city.sent_to(CIT)[-1])
 
@@ -448,6 +450,8 @@ class Level4Live(_Fresh):
         late = [slot("S-LATE", "h1", "2026-12-01T09:00:00+01:00", "tue")]
         city = PartnerCity(booking_chat(slots=late), peers=peers())
         await advance(city)
+        self.assertEqual([o for t in city.sent_to(CIT) for o in bc._offers_in(t)], [])
+        await citizen_says(city, f"need.request prescription_number={RX} lang=it ci siete?")
         last = city.sent_to(CIT)[-1]
         self.assertEqual([o["slot_id"] for o in bc._offers_in(last)], ["S-LATE"])
         self.assertIn("posti reali", last)
@@ -630,6 +634,7 @@ class WarmSentence(_Fresh):
 
     async def test_nothing_anywhere_tells_the_gp(self) -> None:
         city = await asked_city()
+        await citizen_says(city, f"need.request prescription_number={RX} lang=it ci siete?")
         self.assertEqual(len(city.sent_to(bc._GP)), 1)
         self.assertIn(RX, city.sent_to(bc._GP)[0])
 

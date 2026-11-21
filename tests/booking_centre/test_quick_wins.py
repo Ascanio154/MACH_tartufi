@@ -19,7 +19,6 @@ bc = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(bc)
 bc._PULL_PAUSE = 0
 bc._MAX_PARTNERS = 3  # the tests count three asks out of four peers
-bc._PARTNER_TRIES, bc._PARTNER_PAUSE = 2, 0
 
 
 def reset_memory() -> None:

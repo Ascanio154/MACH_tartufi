@@ -184,7 +184,6 @@ _SHOWN_FOR = 40.0
 # Procedure -> the world page that held today's slots for the last case: the next case starts
 # there instead of page 1 (one slow Ledger read less). Days only move forward.
 _TODAY_PAGE: dict[str, int] = {}
-_PARTNER_TRIES, _PARTNER_PAUSE = 80, 3.0  # up to 4 minutes for the partners' first offer
 # Citizens whose receipt we forwarded.
 _BOOKED: set[str] = set()
 # (agent, need) pairs we already explained our message format to.

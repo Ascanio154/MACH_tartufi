@@ -389,13 +389,13 @@ async def _advance_alone(
                     if row.sender in partners and first_word(row.text) == "cancel"}
 
             # Journeys 190-215: every ASST reads the same slow catalogue, so a partner's slots
-            # come minutes later, after the citizen had refused our out-of-window alternative
-            # and the journey had closed (-1). The citizen waits 16 minutes per message: give
-            # the partners that time before the relaxed fallback.
-            fresh = await _until(city, message.need_id, chat, answered, tries=_PARTNER_TRIES,
-                                 pause=_PARTNER_PAUSE)
+            # come minutes later. Never hold the turn for them (a long turn failed the deploy's
+            # custody check): offer now only what is inside the window; a partner's offer opens
+            # its own turn, and the out-of-window alternative waits for every partner's "no" or
+            # for the citizen's next message.
+            fresh = await _until(city, message.need_id, chat, answered)
             if not any(row.sender in partners and first_word(row.text) == "offer" for row in fresh):
-                await _close_search(city, fresh, agent, citizen, key)
+                await _close_search(city, fresh, agent, citizen, key, late=answered(fresh))
             return
         # The citizen writes again and no partner slot reached them: say so, not silence.
         if (message.sender.startswith("citizen:") or replacing) and not _partner_offered(key, number):
@@ -417,8 +417,12 @@ def _partner_offered(key: str, number: str | None) -> bool:
     return "partner-offered" in _sent(f"{key}|{number}").offers
 
 
-async def _close_search(city: City, chat: list[Message], agent: str, citizen: str, key: str) -> None:
-    """Once per case: nobody, here or at the partners, has a fitting slot."""
+async def _close_search(city: City, chat: list[Message], agent: str, citizen: str, key: str,
+                        late: bool = True) -> None:
+    """Once per case: nobody, here or at the partners, has a fitting slot.
+
+    ``late=False`` (partners still silent): only an in-window alternative goes out, or nothing.
+    """
 
     entry = _sent(key)
     text = _NO_PARTNER_IT if _lang(chat) == "it" else _NO_PARTNER_EN
@@ -428,7 +432,9 @@ async def _close_search(city: City, chat: list[Message], agent: str, citizen: st
         return
     # S not empty and no booking is -1, and a B/D citizen refuses the waiting list: offer real
     # slots with one constraint relaxed; with none left, an honest sentence.
-    relaxed = _relaxed_block(chat, agent)
+    relaxed = _relaxed_block(chat, agent, late)
+    if not relaxed and not late:
+        return
     if await _say(city, citizen, relaxed or text):
         entry.offers.add("partner-closed")
     if not relaxed and _number(chat):
@@ -438,8 +444,8 @@ async def _close_search(city: City, chat: list[Message], agent: str, citizen: st
                    "cercare; se per voi il caso non può aspettare, valutate un'alternativa.")
 
 
-def _relaxed_block(chat: list[Message], agent: str) -> str:
-    """Our real slots with one constraint relaxed: the doctor first, then the priority window."""
+def _relaxed_block(chat: list[Message], agent: str, late: bool = True) -> str:
+    """Our real slots with one constraint relaxed: the doctor first, then (``late``) the window."""
 
     number = _number(chat)
     row = _rx_line(chat, agent, number) if number else None
@@ -455,7 +461,7 @@ def _relaxed_block(chat: list[Message], agent: str) -> str:
              if page.sender == LEDGER and first_word(page.text) == "slots"
              for line in page.text.splitlines() if "slot_id=" in line}
     taken = _withdrawn(chat, agent) | _USED
-    for speaks, window in (("it", priority), (lang, "P"), ("it", "P")):
+    for speaks, window in (("it", priority), (lang, "P"), ("it", "P"))[:3 if late else 1]:
         fits = [slot for slot in fitting(list(lines.values()), now=now, priority=window,
                                          lang=speaks, procedure=procedure)
                 if slot.get("slot_id") not in taken]
