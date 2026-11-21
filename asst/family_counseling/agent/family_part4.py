@@ -234,9 +234,23 @@ async def _family_validate_write(city: City, state: _FamilyCase, citizen: str, t
         if not consent or fields.get("consent_ref") != consent:
             raise _FamilyWriteStopped("consent_missing")
         if op == "hold":
-            # A local choice needs the same fresh-clock check as an external one.
-            clock = await _family_read(city, state, "agenda", "agenda", refresh=True, shared=False)
+            # A local choice needs the same fresh-clock check as an external one. Ledger answers
+            # take minutes (Sat 21/11): asking a NEW agenda on every turn made the late answer
+            # re-run the turn, which asked again, and the hold never happened. Use, in order: an
+            # agenda answer that arrived after the citizen's choice, the shared clock, one ask.
+            chose = max((i for i, row in enumerate(state.rows) if row.sender == citizen
+                         and _family_head(row) in {"confirm", "consent"}), default=-1)
+            clock = next((row for row in reversed(state.rows[chose + 1:])
+                          if row.sender == LEDGER and _family_head(row) == "agenda"), None)
             now = _when(_family_fields(clock).get("agenda_now", "")) if clock else None
+            if now is None:
+                now = _when(fields_of(_shared_read("agenda") or "").get("agenda_now", ""))
+            if now is None:
+                asked = any(row.sender == city.agent_id and row.recipient == LEDGER
+                            and row.text == "agenda" for row in state.rows[chose + 1:])
+                clock = await _family_read(city, state, "agenda", "agenda", refresh=not asked,
+                                           shared=False)
+                now = _when(_family_fields(clock).get("agenda_now", "")) if clock else None
             at = _when(offer.get("agenda_date", offer.get("at", "")))
             if now is None or at is None:
                 raise _FamilyWriteStopped("ledger_timeout")

@@ -549,3 +549,33 @@ class LateLedgerDeliveries(unittest.IsolatedAsyncioTestCase):
             await fc._family(city, answer, list(city.chat))
         offers = [o for text in city.to_citizen() for o in fc._offer_rows(text)]
         self.assertTrue(offers, city.to_citizen())
+
+
+class LateClockAtHold(unittest.IsolatedAsyncioTestCase):
+    """The hold re-checks the clock. With ~5 min Ledger answers, asking a NEW agenda on every
+    turn meant the late answer re-ran the turn, which asked again: the hold never happened."""
+
+    async def test_late_agenda_after_the_confirm_lets_the_hold_go(self):
+        fc._FAMILY_CASES.clear()
+        fc._SHARED_READS.clear()
+        city = LedgerCity()
+        await citizen_says(city, "Buongiorno, vorrei un appuntamento al consultorio")
+        offers = [o for text in city.to_citizen() for o in fc._offer_rows(text)]
+
+        class Silent(LedgerCity):
+            async def say(self, to, text, *, status=None):
+                sent = msg(AGENT, text, to)
+                self.chat.append(sent)
+                return sent.msg_id
+
+        silent = Silent()
+        silent.chat = list(city.chat)
+        await citizen_says(silent, f"confirm offer_id={offers[0]['offer_id']} consent_ref=c-1")
+        self.assertEqual(silent.to_ledger("hold"), [])
+        asks = len(silent.to_ledger("agenda"))
+        late = msg(LEDGER, silent._answer("agenda"), AGENT)
+        silent.chat.append(late)
+        silent.inbound = late
+        await fc._family(silent, late, list(silent.chat))
+        self.assertEqual(len(silent.to_ledger("hold")), 1, "the late clock answer lets the hold go")
+        self.assertEqual(len(silent.to_ledger("agenda")), asks, "no new agenda request in the chase")
