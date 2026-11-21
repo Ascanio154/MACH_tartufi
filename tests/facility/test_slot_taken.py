@@ -47,6 +47,7 @@ class GatedCity:
         self.sent: list[tuple[str, str, str]] = []
         self.gate = asyncio.Event()
         self.gated: set[str] = set()
+        self.reads: dict[str, int] = {}
 
     async def say(self, to: str, text: str, *, status: str | None = None) -> str:
         need = self._need
@@ -56,6 +57,7 @@ class GatedCity:
         return row.msg_id
 
     async def history(self, need_id: str | None = None) -> list[Message]:
+        self.reads[need_id or ""] = self.reads.get(need_id or "", 0) + 1
         if need_id in self.gated:
             await self.gate.wait()
         return list(self.chats.get(need_id or "", []))
@@ -72,6 +74,17 @@ class GatedCity:
 
     def to_bc(self, need: str) -> list[str]:
         return [t for n, to, t in self.sent if n == need and to == BC]
+
+
+class RefusingCity(GatedCity):
+    """The Ledger refuses every hold at once."""
+
+    async def say(self, to: str, text: str, *, status: str | None = None) -> str:
+        sent = await super().say(to, text, status=status)
+        if to == LEDGER and text.startswith("hold "):
+            self.chats[self._need].append(
+                msg(LEDGER, "refused op=hold code=SLOT_UNAVAILABLE", self._need, self.agent_id))
+        return sent
 
 
 class _Taken:
@@ -99,13 +112,44 @@ class _Taken:
         city.gate.set()
         await first
 
-    async def test_failed_booking_frees_the_slot_for_the_next_confirm(self) -> None:
-        city = GatedCity(self.agent)
-        await self.run_confirm(city, "N-A", "citizen:a")  # Ledger silent: hold never lands
+    async def test_refused_hold_frees_the_slot_for_the_next_confirm(self) -> None:
+        city = RefusingCity(self.agent)
+        await self.run_confirm(city, "N-A", "citizen:a")
         self.assertEqual(len(city.holds("N-A")), 1)
         await self.run_confirm(city, "N-C", "citizen:c")
-        self.assertEqual(len(city.holds("N-C")), 1, "after A's attempt ended, C may try")
-        self.assertEqual(city.to_bc("N-C"), [])
+        self.assertEqual(len(city.holds("N-C")), 1, "after the Ledger refused A, C may try")
+
+    async def test_silent_ledger_keeps_the_claim_and_ends_the_turn_quickly(self) -> None:
+        # Sat 21/11: Ledger answers arrive after ~3 min (delivery). Waiting 40 s in the turn
+        # never caught them; the late held/committed deliveries finish the booking instead.
+        city = GatedCity(self.agent)
+        await self.run_confirm(city, "N-A", "citizen:a")
+        self.assertLessEqual(city.reads["N-A"], self.module._BOOK_TRIES + 2)
+        await self.run_confirm(city, "N-C", "citizen:c")
+        self.assertEqual(city.holds("N-C"), [], "A's hold is still pending: C gets taken")
+        self.assertEqual(city.to_bc("N-C"), [f"cancel offer_id=of-{SLOT} reason=taken"])
+
+    async def test_stale_claim_lapses(self) -> None:
+        city = GatedCity(self.agent)
+        await self.run_confirm(city, "N-A", "citizen:a")
+        old = self.module._CLAIM_FOR
+        self.module._CLAIM_FOR = 0.0
+        try:
+            await self.run_confirm(city, "N-C", "citizen:c")
+        finally:
+            self.module._CLAIM_FOR = old
+        self.assertEqual(len(city.holds("N-C")), 1)
+
+    async def test_late_held_delivery_commits(self) -> None:
+        city = GatedCity(self.agent)
+        await self.run_confirm(city, "N-A", "citizen:a")
+        held = msg(LEDGER, f"held hold_id=bk-late slot_id={SLOT} fence=1", "N-A", self.agent)
+        city.chats["N-A"].append(held)
+        city._need = "N-A"
+        await self.module._facility(city, held, list(city.chats["N-A"]), reports=False, hold_self=False)
+        commits = [t for n, to, t in city.sent if n == "N-A" and to == LEDGER and t.startswith("commit ")]
+        self.assertEqual(len(commits), 1)
+        self.assertIn("hold_id=bk-late", commits[0].split())
 
     async def test_same_citizen_twice_is_not_taken(self) -> None:
         city = GatedCity(self.agent)

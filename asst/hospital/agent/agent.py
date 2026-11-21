@@ -9,6 +9,7 @@ citizens read the act word and ``key=value`` tokens (ADR-110).
 from __future__ import annotations
 
 import asyncio
+import time
 import logging
 import os
 import re
@@ -62,6 +63,13 @@ _LOG = logging.getLogger("care")
 # reading the history once a second (fewer reads, less load on the Relay).
 _PULL_TRIES = 40
 _PULL_PAUSE = 1.0
+# Hold/commit inside the confirm turn: Ledger answers are deliveries, and since Sat 10:00 a
+# delivery takes ~3 min, so 40 s in the turn never caught them (care.held.missing on every
+# hold) and only kept the turn busy. Wait briefly for a fast Ledger; the late held/committed
+# delivery finishes the booking through _on_held/_on_committed.
+_BOOK_TRIES = 8
+# A slot stays claimed for its citizen while the hold is pending (other confirms get "taken").
+_CLAIM_FOR = 600.0  # real seconds; a refusal frees it at once
 # Needs whose sent offers this process remembers; the oldest is forgotten first.
 _SENT_NEEDS = 4096
 
@@ -292,12 +300,14 @@ async def _await_line(
     token: str,
     *,
     op: str,
+    tries: int | None = None,
 ) -> tuple[Message, list[Message]] | None:
     """The ledger line for ``token``, or a refusal of ``op`` that was not already in ``chat``."""
 
     known = {row.msg_id for row in chat}
     fresh = chat
-    for attempt in range(_PULL_TRIES):
+    tries = tries or _PULL_TRIES
+    for attempt in range(tries):
         try:
             fresh = await city.history(need_id=need_id)
         except CapError:
@@ -308,9 +318,9 @@ async def _await_line(
         for row in fresh:
             if row.msg_id in known or row.sender != LEDGER:
                 continue
-            if first_word(row.text) == "refused" and op in words(row.text):
+            if first_word(row.text) == "refused" and ({op, f"op={op}"} & words(row.text)):
                 return row, fresh
-        if attempt + 1 < _PULL_TRIES:
+        if attempt + 1 < tries:
             await asyncio.sleep(_PULL_PAUSE)
     return None
 
