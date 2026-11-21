@@ -116,10 +116,8 @@ async def _desk_turn(
         await _forward_receipt(city, message, chat)
         return
     if agent_turn and head == "prescription" and message.sender in _TEAM_AGENTS:
-        # Our GP tells us a citizen is on the way: thank it at once (it asked nothing back).
-        visit = fields_of(message.text).get("procedure", "la visita")
-        await _say(city, message.sender, f"Grazie dell'avviso, ricevuto: appena il cittadino mi "
-                   f"scrive con questo numero gli mando subito i posti liberi per {visit}.")
+        # The GP's notice is already in this case history for the citizen's booking turn.
+        # It asks nothing back; an acknowledgement only adds another Relay delivery.
         return
     # MACH-1.2: a partner's reply can open with "cancel reason=no_availability" and carry
     # relaxed "offer ..." lines below. Read it line by line: real slots win over the cancel.

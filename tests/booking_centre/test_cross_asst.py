@@ -667,12 +667,13 @@ class WarmSentence(_Fresh):
                            + VALID_A + " relaxed=days")
         self.assertIn("p-A", [o["offer_id"] for t in city.sent_to(CIT) for o in bc._offers_in(t)])
 
-    async def test_gp_notice_gets_a_plain_thanks_and_nothing_else(self) -> None:
+    async def test_gp_notice_is_kept_without_an_extra_delivery(self) -> None:
         city = PartnerCity([], peers=peers())
         await partner_says(city, bc._GP, f"prescription prescription_number={RX} "
                            "procedure=VIS-FIS priority=B Buongiorno, vi avviso io per primo.")
-        self.assertEqual([to for to, _ in city.attempts], [bc._GP])
-        self.assertFalse(bc.words(city.attempts[0][1]) & bc._ACT_WORDS)
+        self.assertEqual(city.attempts, [])
+        self.assertTrue(any(row.sender == bc._GP and row.text.startswith("prescription ")
+                            for row in city.chat))
 
     async def test_nothing_anywhere_tells_the_gp(self) -> None:
         city = await asked_city()
