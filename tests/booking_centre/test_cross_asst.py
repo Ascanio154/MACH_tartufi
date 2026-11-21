@@ -667,3 +667,39 @@ class RemembersTodayPage(_Fresh):
         fresh.inbound = fresh.chat[0]
         await advance(fresh)
         self.assertIn("world procedure=VIS-FIS page=7", fresh.sent_to(bc.LEDGER))
+
+
+class Level7Faults(_Fresh):
+    """Level 7: partners down and contention."""
+
+    async def test_down_facility_is_not_offered_to_the_next_citizen(self) -> None:
+        city = PartnerCity(booking_chat(), peers=peers(), down={HOSP})
+        await citizen_says(city, f"need.request prescription_number={RX} lang=it")
+        await citizen_says(city, "confirm offer_id=of-S-3 consent_ref=cons-1")
+        self.assertTrue(bc._down(HOSP))
+        bc._SENT.clear()   # another citizen's case: only the "down" memory carries over
+        other = PartnerCity(booking_chat(), peers=peers(), down={HOSP})
+        other.inbound = other.chat[0]
+        await advance(other)
+        self.assertEqual([o for t in other.sent_to(CIT) for o in bc._offers_in(t)], [])
+        self.assertTrue(requests(other))   # straight to the partners instead
+
+    async def test_a_partner_that_is_down_does_not_use_up_an_ask(self) -> None:
+        city = PartnerCity(booking_chat(slots=PAST_ONLY), peers=peers(), down={PX1})
+        await advance(city)
+        self.assertEqual(len({to for to, _ in requests(city)} - {PX1}), 3)
+        self.assertTrue(bc._down(PX1))
+
+    async def test_choice_left_without_receipt_is_freed_on_the_next_message(self) -> None:
+        city = PartnerCity(booking_chat(), peers=peers())
+        await citizen_says(city, f"need.request prescription_number={RX} lang=it")
+        await citizen_says(city, "confirm offer_id=of-S-3 consent_ref=cons-1")
+        await citizen_says(city, "Ci siete? Aspetto la ricevuta.")
+        self.assertFalse(any(t.startswith("cancel") for t in city.sent_to(CIT)))   # too early
+        who = next(iter(bc._PENDING_AT))
+        bc._PENDING_AT[who] -= bc._PENDING_STALE + 1
+        await citizen_says(city, "Ci siete? Aspetto la ricevuta da un pezzo.")
+        cancels = [t for t in city.sent_to(CIT) if t.startswith("cancel offer_id=of-S-3")]
+        self.assertEqual(len(cancels), 1)
+        self.assertIn("reason=facility_unavailable", cancels[0])
+        self.assertTrue(bc._down(HOSP))

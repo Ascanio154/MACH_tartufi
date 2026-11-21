@@ -361,10 +361,18 @@ async def _ask_partners(
     parts.append(token)
     sent_now = False
     limit = _MAX_PARTNERS if _lang(chat) in {"it", "en"} else _MAX_PARTNERS_RARE
-    for peer in (await _partner_peers(city, procedure, ours, _district(chat), _lang(chat)))[:limit]:
+    peers = [peer for peer in await _partner_peers(city, procedure, ours, _district(chat),
+                                                   _lang(chat)) if not _down(peer.agent_id)]
+    reached = 0
+    for peer in peers[:limit * 2]:  # a partner that is down does not use up one of the asks
+        if reached >= limit:
+            break
         if await _send(city, peer.agent_id, " ".join(parts)) is None:
             entry.offers.add(f"partner:{peer.agent_id}")
+            reached += 1
             sent_now = True
+        else:
+            _DOWN[peer.agent_id] = time.monotonic()  # never the same 4xx twice in a row
     if not sent_now:
         return bool(asked - ({avoid} if avoid else set()))
     notice = _PARTNER_ASK_IT if _lang(chat) == "it" else _PARTNER_ASK_EN

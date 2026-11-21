@@ -184,6 +184,20 @@ _SHOWN_FOR = 40.0
 # Procedure -> the world page that held today's slots for the last case: the next case starts
 # there instead of page 1 (one slow Ledger read less). Days only move forward.
 _TODAY_PAGE: dict[str, int] = {}
+# Level 7 (faults and contention). Agent -> when a send to it was last refused (facility switched
+# off, partner down): its slots are not offered and it is not asked again for _DOWN_FOR seconds.
+_DOWN: dict[str, float] = {}
+_DOWN_FOR = 180.0
+# Need|citizen -> when the choice went to the facility. With no receipt and no refusal after
+# _PENDING_STALE seconds, the citizen's next message frees the case (the facility went down).
+_PENDING_AT: dict[str, float] = {}
+_PENDING_STALE = 480.0
+
+
+def _down(agent_id: str) -> bool:
+    return time.monotonic() - _DOWN.get(agent_id, -1e9) < _DOWN_FOR
+
+
 # Citizens whose receipt we forwarded.
 _BOOKED: set[str] = set()
 # (agent, need) pairs we already explained our message format to.

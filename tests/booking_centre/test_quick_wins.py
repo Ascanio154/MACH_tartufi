@@ -25,7 +25,7 @@ def reset_memory() -> None:
     """The brain keeps per-process memory in module globals: start every test clean."""
 
     for name in ("_SENT", "_GATES", "_CROSS_ASKED", "_RECEIPTS", "_LAST_OFFERS", "_BOOK_ASKED",
-                 "_PENDING", "_CONFIRMED_BY", "_BOOKED", "_AGENT_NOTED", "_CANCELS_SENT", "_CONFIRMED_TO", "_OFFERED_TO", "_USED", "_WARM", "_SHOWN", "_STILL_NONE_AT", "_TODAY_PAGE"):
+                 "_PENDING", "_CONFIRMED_BY", "_BOOKED", "_AGENT_NOTED", "_CANCELS_SENT", "_CONFIRMED_TO", "_OFFERED_TO", "_USED", "_WARM", "_SHOWN", "_STILL_NONE_AT", "_TODAY_PAGE", "_DOWN", "_PENDING_AT"):
         getattr(bc, name).clear()
 
 AGENT = "agent:bc"

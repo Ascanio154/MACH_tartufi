@@ -48,7 +48,11 @@ async def _partner_cancel(
     refused = _find_offer(chat, city.agent_id, offer_id)
     if refused.get("doctor_id"):
         when = refused.get("agenda_date") or refused.get("at", "")
-        _sent(key).offers.add(f"bad-doc:{refused['doctor_id']}|{when[:10]}")
+        # Level 7 contention: one refusal is a lost race for that slot. Only a second one for
+        # the same doctor and day (journey 104) takes the doctor's other slots out.
+        mark = f"{refused['doctor_id']}|{when[:10]}"
+        marks = _sent(key).offers
+        marks.add(f"bad-doc:{mark}" if f"lost:{mark}" in marks else f"lost:{mark}")
     mark = (citizen or "", offer_id)
     if (
         citizen
