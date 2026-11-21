@@ -112,6 +112,10 @@ _ACT_IN_TEXT = re.compile(
 )
 # A placeholder the model left unfilled, like "[CODICE]".
 _PLACEHOLDER = re.compile(r"[\[\]{}<>]")
+# Journey 000149: the model wrote "code: 12345". The real number is in the tokens before the
+# sentence; any digits run or code word in the model's text is invented, so it falls back.
+_INVENTED_CODE = re.compile(r"\d{3,}|\b(code|codice|codes|codici|ref|riferimento)\s*[:#]",
+                            re.IGNORECASE)
 _EN_WORDS = frozenset(
     {"the", "my", "i", "have", "and", "please", "would", "doctor", "is", "been", "you", "a"}
 )
@@ -681,7 +685,7 @@ def _clean(raw: object) -> str:
         return ""
     if clinical(line) or _BANNED.search(line):
         return ""
-    if _ACT_IN_TEXT.search(line) or _PLACEHOLDER.search(line):
+    if _ACT_IN_TEXT.search(line) or _PLACEHOLDER.search(line) or _INVENTED_CODE.search(line):
         return ""
     return line
 

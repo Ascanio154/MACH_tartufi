@@ -194,6 +194,13 @@ class Sentence(unittest.TestCase):
             for renewed in (False, True):
                 note = gp._rx_note("VIS-CARD", "B", renewed, english=english)
                 self.assertEqual(gp._clean(note), note)
+
+    def test_invented_code_rejected(self) -> None:
+        # Journey 000149: "code: 12345" in the model's sentence.
+        for bad in ("Ho preparato la ricetta, code: 12345, contatti il centro prenotazioni.",
+                    "I prepared your referral with codice: AB, call the booking centre now.",
+                    "Ho preparato la ricetta numero 98765 per la visita, a presto."):
+            self.assertEqual(gp._clean(bad), "", bad)
         city = FakeCity()
         turn(city, CIT, "Doctor, I have had chest pain since this morning, please help")
         (said,) = to(city, CIT)
