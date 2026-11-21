@@ -596,13 +596,15 @@ async def _no_silence(city: City, message: Message, chat: list[Message]) -> None
         procedure = rx.get("procedure", "")
         _LOG.warning(
             "care.stall need=%s rx=%s proc=%s agenda=%s slots_in_case=%d cache_pages=%d "
-            "asked_world=%d ledger_rows=%d", (message.need_id or "")[-12:], rx.get("state", "-"),
+            "asked_world=%d ledger_rows=%d other=%s", (message.need_id or "")[-12:], rx.get("state", "-"),
             procedure or "-", bool(_ledger(fresh, "agenda")),
             sum(1 for row in fresh if row.sender == LEDGER and first_word(row.text) == "slots"),
             len(_world_cached(procedure)) if procedure else -1,
             sum(1 for row in fresh if row.sender == agent and row.recipient == LEDGER
                 and first_word(row.text) == "world"),
-            sum(1 for row in fresh if row.sender == LEDGER))
+            sum(1 for row in fresh if row.sender == LEDGER),
+            " | ".join(" ".join(row.text.split())[:90] for row in fresh if row.sender == LEDGER
+                       and first_word(row.text) not in {"agenda", "prescription", "rules", "slots"})[:300] or "-")
         # A redelivery: this message already got its "I am on it" after it. A NEW message after
         # one (21/11 12:31: no offer came, the citizen wrote again) gets a reply, never silence.
         said = {_phrase("checking", lang), _phrase("still_checking", lang)}

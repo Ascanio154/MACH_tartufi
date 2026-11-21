@@ -445,3 +445,33 @@ class NoCaseNoMailbox(unittest.IsolatedAsyncioTestCase):
         await bc.main(SimpleNamespace(summary="visit"), city)
         self.assertEqual(reads, [])
 
+
+
+class StaleWorldAsk(unittest.IsolatedAsyncioTestCase):
+    """Sat 21/11 13:38-13:56: a world question never got a slots answer and the case sat on
+    "me ne occupo" until the citizen wrote again. After 90 s without slots, ask page 1 again."""
+
+    async def test_unanswered_world_question_is_asked_again_from_page_1(self) -> None:
+        from datetime import datetime, timedelta, timezone
+        reset_memory()
+        bc._TODAY_PAGE["VIS-FIS"] = 7  # remembered from before the agenda jump, already asked
+        old = (datetime.now(timezone.utc) - timedelta(seconds=120)).isoformat()
+        def at(m: Message, when: str) -> Message:
+            return Message(type=m.type, sender=m.sender, msg_id=m.msg_id, need_id=m.need_id,
+                           body=dict(m.body), recipient=m.recipient, sent_at=when)
+        chat = [
+            msg(CIT, f"need.request prescription_number={RX} lang=it vorrei prenotare", AGENT),
+            msg(AGENT, f"prescription prescription_number={RX}", LEDGER),
+            msg(LEDGER, f"prescription prescription_number={RX} procedure=VIS-FIS priority=D state=issued", AGENT),
+            msg(AGENT, "agenda", LEDGER),
+            msg(LEDGER, f"agenda agenda_now={NOW}", AGENT),
+            at(msg(AGENT, "world procedure=VIS-FIS page=7", LEDGER), old),
+            msg(CIT, "Buongiorno, ci sono novità?", AGENT),
+        ]
+        city = FakeCity(chat)
+        self.addCleanup(setattr, bc, "role_of", bc.role_of)
+        bc.role_of = lambda: "booking_centre"
+        from city_sdk.city import Need
+        await bc.main(Need(service="booking_centre", summary="", message=chat[-1]), city)
+        asks = [t for t in city.sent_to(LEDGER) if t.startswith("world ")]
+        self.assertIn("world procedure=VIS-FIS page=1", asks)

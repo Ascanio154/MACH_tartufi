@@ -316,6 +316,12 @@ async def _advance_alone(
             await _say(city, LEDGER, "agenda")
         if world is None and not _asked(chat, agent, procedure, start):
             await _say(city, LEDGER, f"world procedure={procedure} page={start}")
+        elif world is None and _stale_world_ask(chat, agent, procedure):
+            # Sat 21/11 13:38-13:56: the world question never got a slots answer (cases sat on
+            # "me ne occupo" until the citizen wrote again). The remembered "today page" may be
+            # wrong after the agenda jump: forget it and ask page 1 again (twice at most).
+            _TODAY_PAGE.pop(procedure, None)
+            await _say(city, LEDGER, f"world procedure={procedure} page=1")
         chat = await _until(
             city,
             message.need_id,
@@ -966,3 +972,23 @@ _RECEIPTS: set[str] = set()
 _CONFIRMED_TO: set[tuple[str, str]] = set()  # (need, facility) we forwarded a choice to
 
 
+_WORLD_STALE = 90.0  # real seconds without a slots answer before asking page 1 again
+
+
+def _stale_world_ask(chat: list[Message], agent: str, procedure: str) -> bool:
+    """True when our latest world question for ``procedure`` is old, unanswered, and we asked
+    at most twice: then page 1 is asked again."""
+
+    proc = f"procedure={procedure}"
+    asks = [row for row in chat if row.sender == agent and row.recipient == LEDGER
+            and first_word(row.text) == "world" and proc in row.text.split()]
+    if not asks or len(asks) > 2:
+        return False
+    sent = getattr(asks[-1], "sent_at", "") or ""
+    try:
+        at = datetime.fromisoformat(sent.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if at.tzinfo is None:
+        return False
+    return (datetime.now(timezone.utc) - at).total_seconds() >= _WORLD_STALE
