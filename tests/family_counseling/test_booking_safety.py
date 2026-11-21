@@ -523,3 +523,29 @@ class ArrivalWordsWithoutBooking(unittest.IsolatedAsyncioTestCase):
         await citizen_says(city, f"confirm offer_id={offers[0]['offer_id']} consent_ref=c-1")
         await citizen_says(city, "Eccomi, sono arrivata!")
         self.assertEqual(len(city.to_ledger("checkin")), 1)
+
+
+class LateLedgerDeliveries(unittest.IsolatedAsyncioTestCase):
+    """Sat 21/11: Ledger answers are deliveries (~5 min). After the first turn timed out, the
+    late agenda and slot answers arrived, but the slot turn asked for a FRESH agenda and waited
+    for it, timed out again, and never offered: cases moved only when the citizen wrote again."""
+
+    async def test_late_answers_lead_to_offers_without_the_citizen_writing_again(self):
+        class Late(LedgerCity):
+            async def say(self, to, text, *, status=None):
+                sent = msg(AGENT, text, to)
+                self.chat.append(sent)
+                return sent.msg_id
+
+        fc._FAMILY_CASES.clear()
+        fc._SHARED_READS.clear()
+        city = Late()
+        await citizen_says(city, "Buongiorno, vorrei un appuntamento al consultorio")
+        asked = [row.text for row in city.chat if row.sender == AGENT and row.recipient == LEDGER]
+        for question in asked:
+            answer = msg(LEDGER, city._answer(question), AGENT)
+            city.chat.append(answer)
+            city.inbound = answer
+            await fc._family(city, answer, list(city.chat))
+        offers = [o for text in city.to_citizen() for o in fc._offer_rows(text)]
+        self.assertTrue(offers, city.to_citizen())

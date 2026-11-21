@@ -497,14 +497,14 @@ async def _family_offers(
     else:
         await _family_note(city, state, citizen, "search_incomplete")
         return
-    # Paging can consume agenda time. A late clock reply newer than the world
-    # already is a fresh snapshot; do not start a new query on every clock push.
+    # Paging can consume agenda time. Waiting for a FRESH clock here never worked once Ledger
+    # answers became deliveries (~5 min, Sat 21/11): the slot turn timed out again and the case
+    # moved only when the citizen wrote again. Use the shared clock (advanced at 60x) when there
+    # is one, else the agenda in hand: offers keep _LEAD of margin and the hold re-checks the clock.
     if state.rows.index(agenda) < state.rows.index(world):
-        agenda = await _family_read(city, state, "agenda", "agenda", refresh=True)
-        now = _when("" if agenda is None else _family_fields(agenda).get("agenda_now", ""))
-        if now is None:
-            await _family_note(city, state, citizen, "ledger_timeout")
-            return
+        guessed = _when(fields_of(_shared_read("agenda") or "").get("agenda_now", ""))
+        if guessed is not None and guessed > now:
+            now = guessed
     prefs = _family_preferences(state.rows, citizen)
     days = _family_days(prefs.get("days", ""))
     # Registry attributes are optional. Unknown doctors are offered by exact id;
