@@ -500,8 +500,13 @@ def _cached(rows: list[Message]) -> list[Message]:
     if guess is not None and (seen is None or guess > seen):
         texts.append("agenda agenda_now=" + guess.isoformat())
     procedure = (_ledger(rows, "prescription") or {}).get("procedure", "")
-    if procedure and _latest_slots(rows) is None:
-        texts += _world_cached(procedure)
+    if procedure:
+        # A retry can still carry the page read on its first turn. Another case may have
+        # refreshed that page since then; put its newer answer last so both _latest_slots and
+        # _world_lines use current availability instead of the old free flags.
+        present = {row.text for row in rows if row.sender == LEDGER
+                   and first_word(row.text) == "slots"}
+        texts += [page for page in _world_cached(procedure) if page not in present]
     if not texts:
         return rows
     _LOG.info("care.cache %s", " ".join(text.split()[0] for text in texts))

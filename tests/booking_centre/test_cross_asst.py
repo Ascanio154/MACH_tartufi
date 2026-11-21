@@ -881,6 +881,22 @@ class SharedLedgerAnswers(_Fresh):
         self.assertFalse(bc._world_cached("VIS-FIS", bc._WORLD_REFRESH))  # a fresh read is asked
         self.assertTrue(bc._agenda_stale())
 
+    async def test_retry_uses_newer_catalogue_read_by_another_case(self) -> None:
+        # A case retries after rejecting an offer. Its history still has the first world page,
+        # while another case has since received a newer page with different availability.
+        old = self.stamped(booking_chat(slots=[DEFAULT_SLOTS[0]]), 600)
+        bc._learn(old)
+        newer = self.stamped(booking_chat(slots=[
+            DEFAULT_SLOTS[0].replace("free=1", "free=0"), DEFAULT_SLOTS[1]
+        ]), 5)
+        bc._learn(newer)
+
+        refreshed = bc._cached(old)
+        slots = {bc.fields_of(line)["slot_id"]: bc.fields_of(line)
+                 for line in bc._world_lines(refreshed)}
+        self.assertEqual(slots["S-1"]["free"], "0")
+        self.assertIn("S-2", slots)
+
     async def test_old_answers_are_not_used(self) -> None:
         bc._learn(self.stamped(booking_chat(), 3600))
         self.assertIsNone(bc._agenda_guess())
