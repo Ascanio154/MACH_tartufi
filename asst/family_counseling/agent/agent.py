@@ -150,7 +150,7 @@ _LOG = logging.getLogger("care")
 # The live Ledger answers hold/commit in 15-20 s (Sat morning): 3 reads gave up after 3 s and the
 # booking stopped at "ledger_timeout". Wait ~20 s, one read per second (not a tight loop: the
 # hospital waits 40 s this way live with renew/ack 200, no 422).
-_PULL_TRIES = 20
+_PULL_TRIES = 6  # Sat 12:55: 20 reads x 2 waits per turn lost the lease (renew/ack failed)
 _LIVE_PULL_PAUSE = 1.0
 _PULL_PAUSE = _LIVE_PULL_PAUSE
 _PARTNER_TRIES = 4  # partner replies are slower: one window of about 3 s
@@ -222,7 +222,13 @@ async def main(need: Need, city: City) -> None:
         await _family(city, message, [])
         return
 
-    case = await city.history(need_id=message.need_id)
+    # The deploy's custody.ack probe has no need_id and no chat text: history(need_id=None)
+    # reads the whole mailbox (thousands of messages) and misses the check's 5 s renew window
+    # (hospital 1.0.22 failed it 3 times). A message without a case or text is its own case.
+    if not message.need_id and not message.text:
+        case = [message]
+    else:
+        case = await city.history(need_id=message.need_id)
     await handle(role, city, message, case)
 
 

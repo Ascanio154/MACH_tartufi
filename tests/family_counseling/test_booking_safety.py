@@ -253,12 +253,13 @@ class PacedLedgerWaits(unittest.IsolatedAsyncioTestCase):
         city = SilentLedger()
         found = await fc._await_line(city, "N-1", [], "held", "slot_id=S-1", op="hold")
         self.assertIsNone(found)
-        self.assertLessEqual(city.reads, 20)
-        self.assertGreaterEqual(fc._PULL_TRIES * max(fc._LIVE_PULL_PAUSE, 0), 15)
+        # Sat 12:55: 20 reads per wait (and two waits per turn) lost the message lease
+        # ("lease renew failed", "final ack failed"): late answers continue the case instead.
+        self.assertLessEqual(city.reads, 6)
 
     async def test_slow_ledger_hold_still_books(self):
         class SlowLedger(LedgerCity):
-            """hold/commit answers appear only on the 10th history read after the write."""
+            """hold/commit answers appear only on the 4th history read after the write."""
             def __init__(self):
                 super().__init__()
                 self.pending = []
@@ -267,7 +268,7 @@ class PacedLedgerWaits(unittest.IsolatedAsyncioTestCase):
                 if to == LEDGER and text.split()[0] in {"hold", "commit"}:
                     sent = msg(AGENT, text, to)
                     self.chat.append(sent)
-                    self.pending.append((self.reads + 10, msg(LEDGER, self._answer(text), AGENT)))
+                    self.pending.append((self.reads + 4, msg(LEDGER, self._answer(text), AGENT)))
                     return sent.msg_id
                 return await super().say(to, text, status=status)
             async def history(self, peer=None, *, need_id=None):

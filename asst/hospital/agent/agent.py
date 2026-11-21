@@ -97,7 +97,13 @@ async def main(need: Need, city: City) -> None:
     text = message.text or need.summary
     if clinical(text):
         raise OutOfScope()
-    case = await city.history(need_id=message.need_id)
+    # The deploy's custody.ack probe has no need_id and no chat text: history(need_id=None)
+    # reads the whole mailbox (thousands of messages) and misses the check's 5 s renew window
+    # (hospital 1.0.22 failed it 3 times). A message without a case or text is its own case.
+    if not message.need_id and not message.text:
+        case = [message]
+    else:
+        case = await city.history(need_id=message.need_id)
     await handle(role_of(), city, message, case)
 
 
