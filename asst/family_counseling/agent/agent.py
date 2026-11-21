@@ -81,6 +81,23 @@ def role_of() -> str:
     return _card_role(text)
 
 
+_ACK_AFTER = 4.0
+_PARTNER_ACK = "Ricevuto, verifico la disponibilità del consultorio e vi rispondo in un solo messaggio."
+# Check-in: welcome, what happens now and next. No clinical content, no other patient's data.
+_FAMILY_WELCOME_IT = (
+    "Benvenuta/o al consultorio: il tuo arrivo è registrato, grazie. Accomodati in sala "
+    "d'attesa, ti chiamiamo noi. Se hai esigenze di accessibilità o preferisci un'operatrice, "
+    "dillo pure allo sportello. Dopo il colloquio, se ti serve un altro appuntamento, "
+    "scrivimi: per il consultorio non serve la ricetta."
+)
+_FAMILY_WELCOME_EN = (
+    "Welcome to the family counselling centre: your arrival is registered, thank you. Please "
+    "take a seat in the waiting room, we will call you. If you have accessibility needs or "
+    "prefer a female staff member, just tell the desk. After the meeting, if you need another "
+    "appointment, write to me: no referral is needed here."
+)
+
+
 async def main(need: Need, city: City) -> None:
     message = city.inbound
     if message is None:

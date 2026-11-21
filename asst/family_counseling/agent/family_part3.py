@@ -82,7 +82,8 @@ async def _family_cross_confirm(
         await _family_cross_search(city, state, citizen, city.inbound, now)
         return
     command = (f"confirm offer_id={offer['partner_offer_id']} slot_id={offer['slot_id']} facility={target} "
-               f"citizen={citizen} consent_ref={consent} purpose=cross_asst")
+               f"citizen={citizen} consent_ref={consent} cross_asst_consent_ref={consent} "
+               "purpose=cross_asst")
     key = "family_forward:" + _family_cross_hash(command)
     if _family_cross_marker(state, city.agent_id, key):
         await _family_note(city, state, citizen, "partner_pending")
@@ -175,6 +176,49 @@ async def _facility(
         await _on_checkin(city, message, chat, reports=reports)
     elif "confirm" in kind:
         await _on_confirm(city, message, chat, hold_self=hold_self)
+    elif message.sender.startswith("agent:") and "need.request" in kind and \
+            fields_of(message.text).get("service_type", "").startswith("family_counseling"):
+        await _answer_ring(city, message, chat)
+
+
+async def _answer_ring(city: City, message: Message, chat: list[Message]) -> None:
+    """MACH-1: another ASST asks for our consultorio slots. Criteria in, ONE message out.
+
+    The request carries no citizen data and we ask for none; offers only name our own slots.
+    """
+
+    agent, partner = city.agent_id, message.sender
+    fields = fields_of(message.text)
+    token = f"request_id={fields.get('request_id', message.msg_id)}"
+    if _we(chat, agent, token, to=partner, word="offer") or _we(
+            chat, agent, token, to=partner, word="cancel"):
+        return
+    if not _exact(chat, agent, "agenda"):
+        await _say(city, LEDGER, "agenda")
+    if not _asked(chat, agent, "CONS-GIN", 1):
+        await _say(city, LEDGER, "world procedure=CONS-GIN page=1")
+    rows = await _until(city, message.need_id, chat,
+                        lambda r: _has_agenda(r) and _latest_slots(r) is not None)
+    agenda, world = _ledger(rows, "agenda"), _latest_slots(rows)
+    now = _when("" if agenda is None else agenda.get("agenda_now", ""))
+    if now is None or world is None:
+        await _say(city, partner, f"cancel {token} reason=facility_unavailable")
+        return
+    slots = fitting([line for line in world.splitlines() if "slot_id=" in line], now=now,
+                    priority=fields.get("priority"), lang="it", facility=agent,
+                    procedure="CONS-GIN")[:3]
+    if not slots:
+        await _say(city, partner, f"cancel {token} reason=no_availability")
+        return
+    lines = []
+    for slot in slots:
+        spec = _DOCTORS.get(slot["doctor_id"].rsplit("-", 1)[-1])
+        extra = "" if spec is None else (
+            f" doctor_lang={'/'.join(sorted(spec[0] - {'*'}))} doctor_gender={spec[1]}")
+        lines.append(f"offer offer_id=p-{slot['slot_id']} slot_id={slot['slot_id']} "
+                     f"doctor_id={slot['doctor_id']} facility={agent} procedure=CONS-GIN "
+                     f"agenda_date={slot['at']} agenda_day={slot.get('day', '')}{extra} {token}")
+    await _say(city, partner, "\n".join(lines))
 
 
 def _booking_of(chat: list[Message], agent: str, slot_id: str) -> tuple[str, str, str | None]:

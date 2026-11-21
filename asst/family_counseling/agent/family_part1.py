@@ -445,7 +445,8 @@ async def _on_confirm(
     agent = city.agent_id
     fields = fields_of(message.text)
     offer_id = fields.get("offer_id", "")
-    consent = fields.get("consent_ref", "")
+    # Another ASST's booking: P2 wants its citizen's cross_asst consent on our hold.
+    consent = fields.get("cross_asst_consent_ref") or fields.get("consent_ref", "")
     offer = _our_offer(chat, agent, offer_id) if offer_id else {}
     slot = fields.get("slot_id") or offer.get("slot_id", "")
     facility = fields.get("facility") or offer.get("facility", "")
@@ -551,7 +552,13 @@ async def _family(city: City, message: Message, chat: list[Message]) -> None:
             if not any(row.sender.startswith("citizen:") for row in state.rows):
                 # Preserve facility-to-desk bookings. A peer's citizen= token never
                 # overrides the real sender in a direct-access citizen journey.
-                await _facility(city, message, state.rows, reports=False, hold_self=False)
+                turn = asyncio.ensure_future(
+                    _facility(city, message, state.rows, reports=False, hold_self=False))
+                done, _pending = await asyncio.wait({turn}, timeout=_ACK_AFTER)
+                if not done and message.sender.startswith("agent:"):
+                    # MACH-1: a plain "received" within 10 s, the offer follows.
+                    await _say(city, message.sender, _PARTNER_ACK)
+                await turn
                 return
             await _family_turn(city, message, state)
     finally:
