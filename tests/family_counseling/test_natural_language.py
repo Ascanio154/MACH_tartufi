@@ -142,5 +142,50 @@ class PlainConsultorio(unittest.IsolatedAsyncioTestCase):
         self.assertIn("slot_id=G-1", holds[0].split())
 
 
+class MoreHumanAndRing(unittest.IsolatedAsyncioTestCase):
+    """Proactive check-in, MACH-1 answers to other ASSTs, privacy of the request."""
+
+    def setUp(self) -> None:
+        fc._FAMILY_CASES.clear()
+
+    async def test_checkin_welcomes_with_next_steps(self) -> None:
+        city = LedgerCity()
+        await citizen_says(city, "Buongiorno, vorrei un appuntamento al consultorio")
+        await citizen_says(city, "prendo la prima, consent_ref=cons-1")
+        await citizen_says(city, "Buongiorno, sono arrivata in accettazione")
+        last = city.to_citizen()[-1]
+        self.assertTrue(last.startswith("checkin booking_id=B-77"))
+        self.assertIn("sala d'attesa", last)
+        self.assertIn("non serve la ricetta", last)
+        self.assertEqual(fc.understood(msg(AGENT, last, CIT)).type, "checkin")
+
+    async def test_partner_request_gets_one_offer_message(self) -> None:
+        city = LedgerCity()
+        ask = Message(type="chat", sender="agent:other-bc", msg_id="r-1", need_id="N-RING-1",
+                      recipient=AGENT, body={"text": "need.request service_type=family_counseling"
+                                             ".gynecology procedure=CONS-GIN request_id=rq-7"})
+        city.chat.append(ask)
+        await fc._family(city, ask, list(city.chat))
+        sent = [row.text for row in city.chat if row.recipient == "agent:other-bc"]
+        self.assertEqual(len(sent), 1)
+        rows = [line for line in sent[0].splitlines() if line.startswith("offer ")]
+        self.assertTrue(rows)
+        for line in rows:
+            self.assertIn("request_id=rq-7", line.split())
+            self.assertNotIn("citizen", line)
+
+    async def test_partner_hold_uses_cross_asst_consent(self) -> None:
+        city = LedgerCity()
+        confirm = Message(type="chat", sender="agent:other-bc", msg_id="r-2", need_id="N-RING-2",
+                          recipient=AGENT, body={"text": "confirm offer_id=p-G-2 slot_id=G-2 "
+                                                 "citizen=citizen:x1 consent_ref=c-book "
+                                                 "cross_asst_consent_ref=cx-9"})
+        city.chat.append(confirm)
+        await fc._family(city, confirm, list(city.chat))
+        holds = city.to_ledger("hold")
+        self.assertEqual(len(holds), 1)
+        self.assertIn("consent_ref=cx-9", holds[0].split())
+
+
 if __name__ == "__main__":
     unittest.main()

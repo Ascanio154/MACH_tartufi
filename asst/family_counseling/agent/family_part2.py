@@ -358,9 +358,9 @@ async def _family_checkin(city: City, state: _FamilyCase, citizen: str, message:
         reason = "checkin_pending" if reply is None else _family_fields(reply).get("code", "checkin_pending")
         await _family_note(city, state, citizen, reason, booking_id=booking)
         return
-    phrase = ("Your arrival has been registered. Thank you."
-              if _family_preferences(state.rows, citizen).get("lang", "it") == "en" else
-              "Il tuo arrivo è stato registrato. Grazie.")
+    phrase = (_FAMILY_WELCOME_EN
+              if _family_preferences(state.rows, citizen).get("lang", "it") != "it" else
+              _FAMILY_WELCOME_IT)
     await _family_send(city, state, citizen, f"checkin booking_id={booking}\n{phrase}")
 
 
