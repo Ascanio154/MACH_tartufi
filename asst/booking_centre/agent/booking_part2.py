@@ -505,7 +505,18 @@ async def _no_silence(city: City, message: Message, chat: list[Message]) -> None
                 city, citizen, f"data.request purpose=booking fields=prescription_number {sentence}"
             )
             return
+    if name == "still_none":
+        # Four cancels in the same second (journey 01790002) gave four identical sentences:
+        # one is an answer, four read as a passive agent.
+        clock = time.monotonic()
+        if clock - _STILL_NONE_AT.get(citizen, -1e9) < _STILL_NONE_GAP:
+            return
+        _STILL_NONE_AT[citizen] = clock
     await _say(city, citizen, _phrase(name, lang))
+
+
+_STILL_NONE_AT: dict[str, float] = {}
+_STILL_NONE_GAP = 20.0
 
 
 # --- other ASSTs (and our own agents) writing to the booking centre -----------------------------
