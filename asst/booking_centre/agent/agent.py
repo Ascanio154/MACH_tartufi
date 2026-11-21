@@ -241,7 +241,7 @@ async def _history(city: City, need_id: str | None, known: list[Message]) -> lis
     Without a need_id the SDK reads the whole mailbox: 5 pages of 200 messages, one Relay call
     each (10,000 messages on 21/11). The deploy's custody check sends such a message and waits
     5 s for the renew: 1.0.41 failed three times. A mailbox is not a case anyway. Agents'
-    messages without a need_id keep the old read (their Ledger answers have no need_id either).
+    chat messages without a need_id keep the old read (their Ledger answers have none either).
     """
 
     if not need_id and _NO_MAILBOX.get():
@@ -260,7 +260,11 @@ async def main(need: Need, city: City) -> None:
     booking = bool(_citizen_fields(text).get("prescription_number")) or first_word(text) in _ACT_WORDS
     if clinical(text) and not _emergency(message) and not booking:
         raise OutOfScope()
-    _NO_MAILBOX.set(not message.need_id and not message.sender.startswith("agent:"))
+    # The deploy's custody check comes from an agent (agent:t05/osp-x) with no need_id and no
+    # chat text, only a summary: 1.0.43 still read the mailbox for it. Ledger and partners
+    # always write text.
+    _NO_MAILBOX.set(not message.need_id
+                    and not (message.sender.startswith("agent:") and message.text))
     case = await _history(city, message.need_id, [message])
     await handle(role_of(), city, message, case)
 

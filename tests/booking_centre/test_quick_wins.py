@@ -425,6 +425,26 @@ class NoCaseNoMailbox(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reads, [])
         self.assertTrue(city.sent_to(CIT))  # still answered
 
+    async def test_the_custody_probe_from_an_agent_reads_nothing(self) -> None:
+        # city_conform custody.ack: agent:t05/osp-x, no need_id, body without "text".
+        from types import SimpleNamespace
+
+        reset_memory()
+        probe = Message(type="need.request", sender="agent:t05/osp-x", msg_id="probe-2", need_id=None,
+                        body={"service": "lab", "summary": "visit", "district": 8}, recipient=AGENT)
+        city = FakeCity([probe])
+        reads: list[str | None] = []
+
+        async def history(need_id: str | None = None) -> list[Message]:
+            reads.append(need_id)
+            return list(city.chat)
+
+        city.history = history
+        self.addCleanup(setattr, bc, "role_of", bc.role_of)
+        bc.role_of = lambda: "booking_centre"
+        await bc.main(SimpleNamespace(summary="visit"), city)
+        self.assertEqual(reads, [])
+
 
 class GpNoticePrefetch(unittest.IsolatedAsyncioTestCase):
     """The GP's notice starts the Ledger reads, so the citizen's first answer is the offer."""
