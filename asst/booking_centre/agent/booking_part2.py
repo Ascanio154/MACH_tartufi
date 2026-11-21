@@ -129,7 +129,19 @@ async def _desk_turn(
             await _on_booking_consent(city, message, chat)
             return
         if "cancel" in kind and "confirm" not in kind:
-            # Journey 116: a refusal names the offer too. Never a pick: look for something else.
+            # Journey 116: a refusal names the offer too, and is never a pick. Journeys 224 and
+            # 227: the citizen cancels the offers it leaves and confirms the one it takes, in the
+            # same second. So a cancel is answered only when it leaves nothing open and nothing
+            # on its way to a facility, and once per burst: then we look for something else.
+            clock = time.monotonic()
+            busy = (_open_offers(chat, city.agent_id, message.sender)
+                    or _who(chat, message.sender) in _PENDING
+                    or clock - _CANCEL_AT.get(key, -1e9) < _CANCEL_GAP)
+            if busy:
+                if _REPLIED.get() is not None:
+                    _REPLIED.get()[0] = True  # nothing to say: the choice has its own turn
+                return
+            _CANCEL_AT[key] = clock
             await _advance(city, message, chat, fixed=fixed, replacing=False)
             return
         offers = _open_offers(chat, city.agent_id, message.sender)
@@ -198,6 +210,9 @@ def _down(agent_id: str) -> bool:
     return time.monotonic() - _DOWN.get(agent_id, -1e9) < _DOWN_FOR
 
 
+# Need -> when we last looked for other slots after the citizen's cancels.
+_CANCEL_AT: dict[str, float] = {}
+_CANCEL_GAP = 30.0
 # Citizens whose receipt we forwarded.
 _BOOKED: set[str] = set()
 # (agent, need) pairs we already explained our message format to.

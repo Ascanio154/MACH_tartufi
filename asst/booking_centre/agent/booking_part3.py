@@ -157,9 +157,10 @@ async def _on_partner_offer(city: City, message: Message, chat: list[Message]) -
     # ``lang="it"`` keeps only the time window, deadline and working-day checks of ``fitting``.
     fits = [
         slot
-        for slot in fitting(tagged, now=now, priority=priority, lang="it", procedure=procedure)
+        for slot in fitting(tagged, now=now, priority=priority, lang="it", procedure=procedure,
+                            born=_born(chat))
         + fitting(untagged, now=now, priority=priority, lang=lang, gender=gender,
-                  procedure=procedure)
+                  procedure=procedure, born=_born(chat))
         if slot["slot_id"] not in taken
     ]
     if not fits:
@@ -320,7 +321,7 @@ async def _advance_alone(
     chosen: list[dict[str, str]] = []
     for reserve in (False, _reserve_open(chat)):
         fits = fitting(
-            [line for line in world.splitlines() if "slot_id=" in line],
+            _world_lines(chat),  # every page read: a step back must not hide the page after
             now=now,
             priority=priority,
             lang=_lang(chat),
@@ -328,6 +329,7 @@ async def _advance_alone(
             facility=agent if fixed == "CONS-GIN" else None,
             procedure=procedure,
             reserve=reserve,
+            born=_born(chat),
         )
         chosen = chosen or [
             slot
@@ -368,15 +370,17 @@ async def _advance_alone(
     refusal = replacing or (message.sender == citizen and "cancel" in words(message.text))
     if taken and not refusal:
         return
-    page, further = _page(world)[0], _next_page(world, now, priority)
+    seen = frozenset(_page(row.text)[0] for row in chat
+                     if row.sender == LEDGER and first_word(row.text) == "slots")
+    further = _next_page(world, now, priority, seen)
     if further and not any(_down(slot.get("facility", "")) for slot in fits):
         if not _asked(chat, agent, procedure, further):
             await _say(city, LEDGER, f"world procedure={procedure} page={further}")
         # Journey 162: the Ledger's reply opens no turn, so the citizen waited 16 minutes for
         # their own resend. Read the next page back in this turn and go on.
         fresh = await _until(city, message.need_id, chat,
-                             lambda rows: _page(_latest_slots(rows) or "")[0] > page)
-        if _page(_latest_slots(fresh) or "")[0] > page:
+                             lambda rows: _page(_latest_slots(rows) or "")[0] == further)
+        if _page(_latest_slots(fresh) or "")[0] == further:
             await _advance_alone(city, message, fresh, key, fixed=fixed, replacing=replacing,
                                  avoid=avoid)
         return
@@ -476,7 +480,7 @@ def _relaxed_block(chat: list[Message], agent: str, late: bool = True) -> str:
         if _down(fields_of(line).get("facility", ""))}
     for speaks, window in (("it", priority), (lang, "P"), ("it", "P"))[:3 if late else 1]:
         fits = [slot for slot in fitting(list(lines.values()), now=now, priority=window,
-                                         lang=speaks, procedure=procedure)
+                                         lang=speaks, procedure=procedure, born=_born(chat))
                 if slot.get("slot_id") not in taken]
         if fits:
             lead = _RELAXED_IT if lang == "it" else _RELAXED_EN

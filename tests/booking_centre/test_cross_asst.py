@@ -649,7 +649,7 @@ class WorldPages(unittest.TestCase):
         now = bc._when("2026-11-23T08:00:00+01:00")
         self.assertGreater(bc._next_page(self.page(1, 30, 2), now, "B"), 5)   # 21 days behind
         self.assertEqual(bc._next_page(self.page(9, 30, 22), now, "B"), 10)   # around today
-        self.assertEqual(bc._next_page(self.page(12, 30, 27), now, "B"), 0)   # past the window
+        self.assertEqual(bc._next_page(self.page(12, 30, 27), now, "B", frozenset({11})), 0)  # past the window
         self.assertEqual(bc._next_page(self.page(30, 30, 22), now, "B"), 0)   # last page
         self.assertEqual(bc._next_page(self.page(1, 3, 23), now, "B"), 2)     # nothing to skip
 
@@ -703,3 +703,44 @@ class Level7Faults(_Fresh):
         self.assertEqual(len(cancels), 1)
         self.assertIn("reason=facility_unavailable", cancels[0])
         self.assertTrue(bc._down(HOSP))
+
+
+class LiveAfter1022(_Fresh):
+    """From the journeys of the night of 21/11 (224, 227, 228, 166)."""
+
+    async def test_deadline_runs_from_the_first_agenda_read_not_from_now(self) -> None:
+        # Case born Monday 08:00, priority D (5 days): the citizen's deadline is Saturday 08:00.
+        # We answer three agenda days later: a slot on the following Monday is past it.
+        chat = booking_chat(slots=[slot("S-IN", "h2", "2026-11-27T09:00:00+01:00", "fri"),
+                                   slot("S-OUT", "h1", "2026-11-30T09:00:00+01:00", "mon")])
+        chat.append(msg(bc.LEDGER, "agenda agenda_now=2026-11-26T08:00:00+01:00", AGENT))
+        city = PartnerCity(chat, peers=[])
+        city.inbound = chat[0]
+        await advance(city)
+        got = [o["slot_id"] for t in city.sent_to(CIT) for o in bc._offers_in(t)]
+        self.assertEqual(got, ["S-IN"])
+
+    async def test_cancel_of_the_other_offers_next_to_a_confirm_brings_no_new_offer(self) -> None:
+        city = PartnerCity(booking_chat(), peers=peers())
+        await citizen_says(city, f"need.request prescription_number={RX} lang=it")
+        before = len(offer_messages(city))
+        await citizen_says(city, "Non posso. cancel offer_id=of-S-1 reason=deadline")
+        await citizen_says(city, "confirm offer_id=of-S-3 consent_ref=cons-1")
+        await citizen_says(city, "Non posso. cancel offer_id=of-S-5 reason=deadline")
+        self.assertEqual(len(offer_messages(city)), before)
+        self.assertEqual(len(confirms_to(city, HOSP)), 1)
+
+    async def test_page_jump_counts_weekdays_and_steps_back(self) -> None:
+        # 1.0.22 counted calendar days, landed one page past today and found "no slot".
+        def page(n: int, first: str, last: str) -> str:
+            rows = [slot(f"S-{n}-{i}", "h1", f"{d}T{hour}:00:00+01:00", "mon")
+                    for i, (d, hour) in enumerate(((first, "09"), (last, "16")))]
+            return f"slots procedure=VIS-FIS page={n}/13\n" + "\n".join(rows)
+        now = bc._when("2026-11-26T11:00:00+01:00")   # Thursday of the fourth week
+        # Page 1 holds Mon 2 - Fri 6 (one working week): today is 3.6 working weeks ahead.
+        self.assertEqual(bc._next_page(page(1, "2026-11-02", "2026-11-06"), now, "B"), 4)
+        # A landing on a page that is all ahead steps back once, never twice.
+        ahead = page(5, "2026-11-30", "2026-12-04")
+        self.assertEqual(bc._next_page(ahead, now, "B", frozenset({1, 5})), 4)
+        self.assertEqual(bc._next_page(page(4, "2026-11-23", "2026-11-27"), now, "B",
+                                       frozenset({1, 4, 5})), 0)

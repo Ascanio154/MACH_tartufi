@@ -71,8 +71,8 @@ _RX = re.compile(r"^prescription_number-[A-Z0-9-]{4,40}$")
 _LOG = logging.getLogger("care")
 # The Relay accepts a ledger reply and then the agent rejects the push, so the reply sits in
 # the case history and never opens a turn. Wait briefly and read it back from history.
-_PULL_TRIES = 24
-_PULL_PAUSE = 0.25
+_PULL_TRIES = 8  # the same 6 s, a third of the history reads (38 in 6 s seen live)
+_PULL_PAUSE = 0.75
 # Needs whose sent offers this process remembers; the oldest is forgotten first.
 _SENT_NEEDS = 4096
 # Every slot goes in ONE offer message: the citizen chooses in that turn, and a later message

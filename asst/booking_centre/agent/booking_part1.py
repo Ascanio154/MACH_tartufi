@@ -12,16 +12,21 @@ def fitting(
     facility: str | None = None,
     procedure: str | None = None,
     reserve: bool = False,
+    born: datetime | None = None,
 ) -> list[dict[str, str]]:
     """Slots a citizen can accept: future, free, in the priority window, spoken language.
 
     ``reserve`` lets a non-U priority use the urgent reserve: only while rule P3 is not in force.
+    ``born`` is when the case started: the priority's deadline runs from the referral, not from
+    now (journeys 228 and 166: a slot 48 h from *now* was refused with reason=deadline).
     """
 
     if priority == "U":
         horizon: datetime | None = now.replace(hour=23, minute=59, second=59, microsecond=0)
     elif priority == "P":
         horizon = None
+    elif born is not None and priority in _DEADLINE_DAYS:
+        horizon = born + timedelta(days=_DEADLINE_DAYS[priority]) - _BORN_MARGIN
     else:
         horizon = now + timedelta(days=_DEADLINE_DAYS.get(priority or "", 14))
     earliest = now + _LEAD
@@ -152,6 +157,19 @@ def _ledger(chat: list[Message], head: str) -> dict[str, str] | None:
         if row.sender == LEDGER and first_word(row.text) == head:
             found = fields_of(row.text)
     return found
+
+
+# The GP wrote the referral a little before our first agenda read of the case.
+_BORN_MARGIN = timedelta(hours=2)
+
+
+def _born(chat: list[Message]) -> datetime | None:
+    """Agenda time of our first read for this case: the closest we see to the referral's issue."""
+
+    for row in chat:
+        if row.sender == LEDGER and first_word(row.text) == "agenda":
+            return _when(fields_of(row.text).get("agenda_now", ""))
+    return None
 
 
 def _reserve_open(chat: list[Message]) -> bool:
@@ -400,7 +418,7 @@ def _ring_criteria(chat: list[Message], priority: str | None) -> list[str]:
     agenda = _ledger(chat, "agenda")
     now = _when("" if agenda is None else agenda.get("agenda_now", ""))
     if now is not None and priority in _DEADLINE_DAYS:
-        end = now + timedelta(days=_DEADLINE_DAYS[priority])
+        end = (_born(chat) or now) + timedelta(days=_DEADLINE_DAYS[priority]) - _BORN_MARGIN
         found.append(f"deadline={end.isoformat(timespec='seconds')}")
     return [item for item in found if re.fullmatch(r"[a-z_]+=[A-Za-z0-9:/+.-]+", item)]
 
@@ -421,26 +439,47 @@ def _page(text: str) -> tuple[int, int]:
     return 1, 1
 
 
-def _next_page(world: str, now: datetime, priority: str | None) -> int:
-    """The world page to read after this one, 0 when no later page can hold a slot in time.
+def _workday(day: datetime) -> float:
+    """Weekdays since a fixed Monday: the agenda has no Saturday or Sunday."""
+
+    return (day.toordinal() - 1) // 7 * 5 + min(day.weekday(), 5) + (
+        0 if day.weekday() > 4 else (day.hour + day.minute / 60) / 24)
+
+
+def _world_lines(chat: list[Message]) -> list[str]:
+    """The slot lines of every world page read for this case, each slot once."""
+
+    lines = {fields_of(line).get("slot_id"): line for page in chat
+             if page.sender == LEDGER and first_word(page.text) == "slots"
+             for line in page.text.splitlines() if "slot_id=" in line}
+    return list(lines.values())
+
+
+def _next_page(world: str, now: datetime, priority: str | None,
+               seen: frozenset[int] = frozenset()) -> int:
+    """The world page to read after this one, 0 when no other page can hold a slot in time.
 
     The catalogue lists every weekday of the race from its first day, in date order: by day 14
     the slots still ahead sat six pages in, each one a slow Ledger read (3 minutes before the
-    first offer, journeys 197-201). Jump over the past days; stop once past the window.
+    first offer, journeys 197-201). Jump over the past days, counted in weekdays (1.0.22 counted
+    calendar days, landed one page past today and told everyone "no slot"); a landing past today
+    steps back; stop once past the window. ``seen`` are the pages already read.
     """
 
     page, pages = _page(world)
     days = sorted(day for day in (_when(fields_of(line).get("at", ""))
                                   for line in world.splitlines() if "slot_id=" in line) if day)
-    if page >= pages or page >= _MAX_PAGE:
+    if days and days[0] > now and page > 1 and page - 1 not in seen:
+        return page - 1  # everything here is ahead: today's slots may sit on the page before
+    if page >= pages or page >= _MAX_PAGE or page + 1 in seen:
         return 0
     if not days:
         return page + 1
     if days[0] > now + timedelta(days=_DEADLINE_DAYS.get(priority or "", 14)):
         return 0
     if page == 1 and days[0] < days[-1] < now:
-        per_page = (days[-1] - days[0]) / timedelta(days=1)
-        ahead = (now - days[0]) / timedelta(days=1)
+        per_page = _workday(days[-1]) - _workday(days[0])
+        ahead = _workday(now) - _workday(days[0])
         return max(2, min(pages, int(ahead / per_page * 0.9) + 1))  # land a little early
     return page + 1
 
