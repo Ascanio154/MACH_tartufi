@@ -492,7 +492,7 @@ async def _announce(city: City, message: Message, chat: list[Message], agent: st
 # --- the rest of the brain ----------------------------------------------------------------------
 # City Hall refuses a brain file of thousands of lines, so the code lives in the files below,
 # next to this one. Each runs in THIS module's namespace, in order: one brain, as before.
-_PARTS = ('specialist_part1.py', 'specialist_part2.py')
+_PARTS = ('specialist_part1.py', 'specialist_part2.py', 'specialist_part3.py')
 
 
 def _load_parts() -> None:

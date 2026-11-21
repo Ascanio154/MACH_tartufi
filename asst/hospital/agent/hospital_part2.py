@@ -103,6 +103,80 @@ def _partner_pages(chat: list[Message], procedure: str) -> dict[int, str]:
     return found
 
 
+# procedure -> the world page that held "now" at the last partner request (this process only).
+_PARTNER_HINT: dict[str, int] = {}
+
+
+def _page_span(text: str) -> tuple[datetime, datetime] | None:
+    times = [
+        at
+        for at in (_when(fields_of(line).get("at", "")) for line in text.splitlines() if "slot_id=" in line)
+        if at is not None
+    ]
+    return (min(times), max(times)) if times else None
+
+
+def _partner_now_page(got: dict[int, str], now: datetime) -> int | None:
+    """The first page whose slots reach "now", once the pages read pin it down."""
+
+    info = {page: span for page, text in got.items() if (span := _page_span(text))}
+    cover = [page for page, (first, last) in info.items() if first < now <= last]
+    if cover:
+        return min(cover)
+    before = [page for page, (first, last) in info.items() if last < now]
+    after = [page for page, (first, last) in info.items() if first >= now]
+    if after:
+        low = min(after)
+        if low == 1 or (before and max(before) == low - 1):
+            return low
+    return None
+
+
+def _partner_first_future(got: dict[int, str], now: datetime) -> int | None:
+    """Best guess for next time: the lowest page read whose slots reach "now" or later."""
+
+    reach = [page for page, text in got.items() if (span := _page_span(text)) and span[1] >= now]
+    return min(reach) if reach else None
+
+
+def _partner_next_page(got: dict[int, str], now: datetime, pages: int, tried: set[int]) -> int | None:
+    """Next page to read. The catalogue is sorted by date: once the page that reaches "now" is
+    known, read forward from it; before that, interpolate between a page in the past and one in
+    the future, or jump from a past page at about one agenda day per page."""
+
+    start = _partner_now_page(got, now)
+    if start is not None:
+        for page in range(start + 1, pages + 1):
+            if page not in tried:
+                return page
+        return None
+    info = {page: span for page, text in got.items() if (span := _page_span(text))}
+    before = [page for page, (first, last) in info.items() if last < now]
+    after = [page for page, (first, last) in info.items() if first >= now]
+    low = max(before) if before else 0
+    high = min(after) if after else pages + 1
+    if high - low <= 1:
+        return None
+    if before and after:
+        gap = (info[high][0] - info[low][1]).total_seconds()
+        share = (now - info[low][1]).total_seconds() / gap if gap > 0 else 0.5
+        target = low + max(1, round(share * (high - low)))
+    elif before:
+        first, last = info[low]
+        per_page = max((last - first).total_seconds(), 86400.0)
+        target = low + max(1, int((now - last).total_seconds() // per_page) + 1)
+    else:
+        first, last = info[high]
+        per_page = max((last - first).total_seconds(), 86400.0)
+        target = high - max(1, int((first - now).total_seconds() // per_page) + 1)
+    target = min(max(target, low + 1), high - 1)
+    for step in range(high - low):
+        for page in (target + step, target - step):
+            if low < page < high and page not in tried:
+                return page
+    return None
+
+
 def _partner_lines(chat: list[Message], procedure: str) -> list[str]:
     return [
         line
@@ -133,7 +207,9 @@ async def _answer_partner(city: City, message: Message, chat: list[Message]) -> 
         row.sender == agent and row.recipient == LEDGER and first_word(row.text) == "world"
         for row in chat
     ):
-        await _say(city, LEDGER, f"world procedure={procedure} page=1")
+        # Start from the page that held "now" last time (the catalogue begins on day one of
+        # the event and is sorted by date): page 1 is only the first guess.
+        await _say(city, LEDGER, f"world procedure={procedure} page={_PARTNER_HINT.get(procedure, 1)}")
     if _ledger(chat, "agenda") is None and not _exact(chat, agent, "agenda"):
         await _say(city, LEDGER, "agenda")
     chat = await _until(
@@ -154,12 +230,15 @@ async def _answer_partner(city: City, message: Message, chat: list[Message]) -> 
         facility=agent,
         procedure=procedure,
     )
-    _, pages = _page(_partner_pages(chat, procedure).get(1, world))
+    _, pages = _page(world)
     loop = asyncio.get_running_loop()
     stop = loop.time() + _PARTNER_BUDGET
-    page = 1
-    while len(slots) < _PARTNER_MAX and page < min(pages, _PARTNER_PAGES) and loop.time() < stop:
-        page += 1
+    tried = set(_partner_pages(chat, procedure))
+    while len(slots) < _PARTNER_MAX and len(tried) < _PARTNER_PAGES and loop.time() < stop:
+        page = _partner_next_page(_partner_pages(chat, procedure), now, pages, tried)
+        if page is None:
+            break
+        tried.add(page)
         if not _asked(chat, agent, procedure, page):
             await _say(city, LEDGER, f"world procedure={procedure} page={page}")
         chat = await _until(
@@ -177,6 +256,11 @@ async def _answer_partner(city: City, message: Message, chat: list[Message]) -> 
             facility=agent,
             procedure=procedure,
         )
+    found = _partner_now_page(_partner_pages(chat, procedure), now) or _partner_first_future(
+        _partner_pages(chat, procedure), now
+    )
+    if found is not None:
+        _PARTNER_HINT[procedure] = found
     if not slots:
         await _say(city, partner, f"cancel {token} reason=no_availability")
         return
