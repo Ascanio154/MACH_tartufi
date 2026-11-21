@@ -424,3 +424,29 @@ class NoCaseNoMailbox(unittest.IsolatedAsyncioTestCase):
         await bc.main(None, city)
         self.assertEqual(reads, [])
         self.assertTrue(city.sent_to(CIT))  # still answered
+
+
+class GpNoticePrefetch(unittest.IsolatedAsyncioTestCase):
+    """The GP's notice starts the Ledger reads, so the citizen's first answer is the offer."""
+
+    async def test_notice_asks_the_ledger_and_the_first_reply_is_the_offer(self) -> None:
+        reset_memory()
+        notice = msg(bc._GP, f"prescription prescription_number={RX} procedure=VIS-FIS priority=D "
+                             "Ho appena prescritto questa visita.", AGENT)
+        city = FakeCity([notice])
+        await bc._desk_turn(city, notice, list(city.chat), hold_self=False, fixed=None)
+        self.assertEqual(city.sent_to(LEDGER), [f"prescription prescription_number={RX}", "agenda",
+                                                "world procedure=VIS-FIS page=1"])
+        self.assertTrue(city.sent_to(bc._GP)[0].startswith("Grazie dell'avviso"))
+        # The Ledger answers while the citizen is still on the way.
+        city.chat += [
+            msg(LEDGER, f"prescription prescription_number={RX} procedure=VIS-FIS priority=D state=issued", AGENT),
+            msg(LEDGER, f"agenda agenda_now={NOW}", AGENT),
+            msg(LEDGER, "slots procedure=VIS-FIS page=1/1\n" + "\n".join(DEFAULT_SLOTS), AGENT),
+            msg(CIT, f"need.request prescription_number={RX} lang=it", AGENT),
+        ]
+        city.inbound = city.chat[-1]
+        city.attempts.clear()
+        await bc._desk_turn(city, city.inbound, list(city.chat), hold_self=False, fixed=None)
+        self.assertEqual(city.sent_to(LEDGER), [])
+        self.assertTrue(offer_lines(city.sent_to(CIT)[0]))

@@ -120,6 +120,18 @@ async def _desk_turn(
         visit = fields_of(message.text).get("procedure", "la visita")
         await _say(city, message.sender, f"Grazie dell'avviso, ricevuto: appena il cittadino mi "
                    f"scrive con questo numero gli mando subito i posti liberi per {visit}.")
+        # 21/11: the first answer to the citizen was "me ne occupo" in 60 journeys out of 60 and
+        # the offer came a median of 17 minutes later: each Ledger answer takes ~5 minutes. Ask
+        # now, in the citizen's case, so the answers are in its history when the citizen writes.
+        told = fields_of(message.text)
+        number, procedure = told.get("prescription_number", ""), told.get("procedure", "")
+        if _RX.match(number) and _rx_asked(chat, city.agent_id, number) < 0:
+            await _say(city, LEDGER, f"prescription prescription_number={number}")
+        if not _exact(chat, city.agent_id, "agenda") and _agenda_stale():
+            await _say(city, LEDGER, "agenda")
+        start = _TODAY_PAGE.get(procedure, 1)
+        if procedure in _SERVICE_PROCEDURE.values() and not _asked(chat, city.agent_id, procedure, start):
+            await _say(city, LEDGER, f"world procedure={procedure} page={start}")
         return
     # MACH-1.2: a partner's reply can open with "cancel reason=no_availability" and carry
     # relaxed "offer ..." lines below. Read it line by line: real slots win over the cancel.

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import unittest
 
-from city_sdk.city import CapError, Message, Peer
+from city_sdk.city import LEDGER, CapError, Message, Peer
 
 from tests.booking_centre.test_quick_wins import (
     AGENT,
@@ -642,11 +642,11 @@ class WarmSentence(_Fresh):
                            + VALID_A + " relaxed=days")
         self.assertIn("p-A", [o["offer_id"] for t in city.sent_to(CIT) for o in bc._offers_in(t)])
 
-    async def test_gp_notice_gets_a_plain_thanks_and_nothing_else(self) -> None:
+    async def test_gp_notice_gets_a_plain_thanks_then_only_ledger_reads(self) -> None:
         city = PartnerCity([], peers=peers())
         await partner_says(city, bc._GP, f"prescription prescription_number={RX} "
                            "procedure=VIS-FIS priority=B Buongiorno, vi avviso io per primo.")
-        self.assertEqual([to for to, _ in city.attempts], [bc._GP])
+        self.assertEqual([to for to, _ in city.attempts], [bc._GP, LEDGER, LEDGER, LEDGER])
         self.assertFalse(bc.words(city.attempts[0][1]) & bc._ACT_WORDS)
 
     async def test_nothing_anywhere_tells_the_gp(self) -> None:
