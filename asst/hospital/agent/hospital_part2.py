@@ -31,9 +31,13 @@ async def _facility(
             booking_id=_checkin_booking(message, chat, city.agent_id),
         )
     elif message.sender.startswith("agent:") and first_word(message.text) == "need.request":
-        await _answer_partner(city, message, chat)
+        await _with_ack(city, message, _answer_partner(city, message, chat), _PARTNER_ACK)
     elif "confirm" in kind:
-        await _on_confirm(city, message, chat, hold_self=hold_self)
+        work = _on_confirm(city, message, chat, hold_self=hold_self)
+        if message.sender.startswith("agent:"):
+            await _with_ack(city, message, work, _CONFIRM_ACK)
+        else:
+            await work
 
 
 # --- partner ASSTs (cross-ASST) -----------------------------------------------------------------
@@ -101,6 +105,45 @@ def _partner_pages(chat: list[Message], procedure: str) -> dict[int, str]:
         page, _ = _page(row.text)
         found[page] = row.text
     return found
+
+
+# Ledger reads take 15-20 s on the live city. Another agent hears a plain "received" after
+# _ACK_AFTER seconds (fast reply, MACH-1) while the work goes on; the text has no act word
+# and nothing a booking centre reads as "no availability".
+_ACK_AFTER = 4.0
+_PARTNER_ACK = "Ricevuto, verifico la disponibilità e vi rispondo in un solo messaggio."
+_CONFIRM_ACK = "Ricevuto, blocco il posto sul Ledger e vi mando la ricevuta appena è pronta."
+_PARTNER_WAIT = 30.0  # seconds a partner request may wait for the Ledger, in all
+
+
+async def _with_ack(city: City, message: Message, work, ack: str) -> None:
+    turn = asyncio.ensure_future(work)
+    done, _pending = await asyncio.wait({turn}, timeout=_ACK_AFTER)
+    if not done:
+        await _say(city, message.sender, ack)
+    await turn
+
+
+async def _until_long(
+    city: City,
+    need_id: str | None,
+    chat: list[Message],
+    ready: Callable[[list[Message]], bool],
+    seconds: float,
+) -> list[Message]:
+    """Like _until, but waits up to ``seconds`` (the Ledger can be slow)."""
+
+    loop = asyncio.get_running_loop()
+    stop = loop.time() + max(0.0, seconds)
+    fresh = chat
+    while True:
+        try:
+            fresh = await city.history(need_id=need_id)
+        except CapError:
+            fresh = chat
+        if ready(fresh) or loop.time() >= stop:
+            return fresh
+        await asyncio.sleep(max(_PULL_PAUSE, 0.05))
 
 
 # procedure -> the world page that held "now" at the last partner request (this process only).
@@ -212,11 +255,14 @@ async def _answer_partner(city: City, message: Message, chat: list[Message]) -> 
         await _say(city, LEDGER, f"world procedure={procedure} page={_PARTNER_HINT.get(procedure, 1)}")
     if _ledger(chat, "agenda") is None and not _exact(chat, agent, "agenda"):
         await _say(city, LEDGER, "agenda")
-    chat = await _until(
+    loop = asyncio.get_running_loop()
+    stop = loop.time() + _PARTNER_WAIT
+    chat = await _until_long(
         city,
         message.need_id,
         chat,
         lambda rows: _latest_slots(rows) is not None and _ledger(rows, "agenda") is not None,
+        _PARTNER_WAIT,
     )
     world = _latest_slots(chat)
     agenda = _ledger(chat, "agenda")
@@ -231,8 +277,6 @@ async def _answer_partner(city: City, message: Message, chat: list[Message]) -> 
         procedure=procedure,
     )
     _, pages = _page(world)
-    loop = asyncio.get_running_loop()
-    stop = loop.time() + _PARTNER_BUDGET
     tried = set(_partner_pages(chat, procedure))
     while len(slots) < _PARTNER_MAX and len(tried) < _PARTNER_PAGES and loop.time() < stop:
         page = _partner_next_page(_partner_pages(chat, procedure), now, pages, tried)
@@ -241,11 +285,12 @@ async def _answer_partner(city: City, message: Message, chat: list[Message]) -> 
         tried.add(page)
         if not _asked(chat, agent, procedure, page):
             await _say(city, LEDGER, f"world procedure={procedure} page={page}")
-        chat = await _until(
+        chat = await _until_long(
             city,
             message.need_id,
             chat,
             lambda rows, wanted=page: wanted in _partner_pages(rows, procedure),
+            stop - loop.time(),
         )
         if page not in _partner_pages(chat, procedure):
             break

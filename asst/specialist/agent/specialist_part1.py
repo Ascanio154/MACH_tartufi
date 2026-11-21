@@ -464,9 +464,13 @@ async def _facility(
     ):
         await _on_report_consent(city, message, chat)
     elif message.sender.startswith("agent:") and first_word(message.text) == "need.request":
-        await _answer_partner(city, message, chat)
+        await _with_ack(city, message, _answer_partner(city, message, chat), _PARTNER_ACK)
     elif "confirm" in kind:
-        await _on_confirm(city, message, chat, hold_self=hold_self)
+        work = _on_confirm(city, message, chat, hold_self=hold_self)
+        if message.sender.startswith("agent:"):
+            await _with_ack(city, message, work, _CONFIRM_ACK)
+        else:
+            await work
 
 
 # --- partner ASSTs (cross-ASST) -----------------------------------------------------------------
