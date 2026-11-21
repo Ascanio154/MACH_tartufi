@@ -135,7 +135,31 @@ class Protocol(unittest.TestCase):
         self.assertEqual(len(to(city, CIT)), 1)
 
 
+class FastPath(unittest.TestCase):
+    def test_keyword_prescription_makes_no_model_call(self):
+        # The model sentence cost 2-3 minutes when the city was congested: the prescription
+        # goes out with the standard sentence and no model call at all.
+        for text, procedure, priority in REAL:
+            with self.subTest(text=text[:40]):
+                city = FakeCity()
+                turn(city, CIT, text)
+                (said,) = to(city, CIT)
+                self.assertEqual(city.llm_calls, 0)
+                english = gp._english(text)
+                self.assertTrue(said.endswith(gp._rx_note(procedure, priority, english=english)), said)
+                self.assertIn(gp._COLLAB_EN if english else gp._COLLAB_IT, said)
+
+
 class Sentence(unittest.TestCase):
+    # The model sentence is off in the hot path (_MODEL_SENTENCE); these keep its safety
+    # checks working for when it is turned back on.
+    def setUp(self):
+        self._old = gp._MODEL_SENTENCE
+        gp._MODEL_SENTENCE = True
+
+    def tearDown(self):
+        gp._MODEL_SENTENCE = self._old
+
     def said(self, **kw) -> str:
         city = FakeCity(**kw)
         turn(city, CIT, REAL[3][0])
@@ -395,7 +419,7 @@ class VisibleCollaboration(unittest.TestCase):
         (said,) = to(city, CIT)
         self.assertIn(gp._COLLAB_IT, said)
         self.assertEqual(understood(msg(AGENT, said)).type, "prescription")
-        self.assertTrue(said.endswith(GOOD), "the model sentence still closes the message")
+        self.assertTrue(said.endswith(gp._rx_note(REAL[0][1], REAL[0][2])), "the standard sentence closes it")
 
     def test_english_citizen_hears_it_in_english(self):
         city = FakeCity(llm="")

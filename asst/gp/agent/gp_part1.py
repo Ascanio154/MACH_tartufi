@@ -171,7 +171,7 @@ async def _issue(
                 return
         if _we(chat, agent, token, to=citizen, word="prescription"):
             return
-        note = (await _kind(city, said, procedure, priority, renewed) if model
+        note = (await _kind(city, said, procedure, priority, renewed) if model and _MODEL_SENTENCE
                 else _rx_note(procedure, priority, renewed, english=_english(said)))
         # The model can take seconds: another turn may have answered this case meanwhile.
         try:
