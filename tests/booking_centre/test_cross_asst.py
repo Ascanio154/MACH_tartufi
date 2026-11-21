@@ -566,3 +566,21 @@ class WarmSentence(_Fresh):
             await advance(city)
             got = [o["slot_id"] for t in city.sent_to(CIT) for o in bc._offers_in(t)]
             self.assertEqual(got, expected, rules)
+
+    async def test_receipt_comes_with_a_pre_visit_note_to_our_facility(self) -> None:
+        team = bc._TEAM_AGENTS
+        bc._TEAM_AGENTS = team | {HOSP}
+        try:
+            city = PartnerCity(booking_chat(citizen_extra="vengo in carrozzina"), peers=[])
+            await citizen_says(city, f"need.request prescription_number={RX} lang=it")
+            await citizen_says(city, "confirm offer_id=of-S-3 consent_ref=cons-1")
+            await partner_says(city, HOSP, "booking.receipt booking_id=bk-1 ledger_ref=lr-1")
+        finally:
+            bc._TEAM_AGENTS = team
+        note = city.sent_to(HOSP)[-1]
+        self.assertIn("accessibilità", note)
+        self.assertNotIn(bc.understood(msg(AGENT, note, HOSP)).type, ("confirm", "checkin"))
+        self.assertFalse({"confirm", "need.request", "checkin"} & bc.words(note))
+        receipt = city.sent_to(CIT)[-1]
+        self.assertEqual(bc.understood(msg(AGENT, receipt, CIT)).type, "booking.receipt")
+        self.assertIn("scritto alla struttura", receipt)

@@ -743,6 +743,12 @@ async def _forward_receipt(city: City, message: Message, chat: list[Message]) ->
         return
     _RECEIPTS.add(booking_id)
     sentence = _phrase("receipt", _lang(chat))
+    if message.sender in _TEAM_AGENTS and await _say(city, message.sender,
+                                                     _visit_note(chat, booking_id)):
+        # A call beyond the booking flow: the facility knows who is coming before the visit.
+        sentence += (" Ho anche scritto alla struttura come accoglierla al meglio quel giorno."
+                     if _lang(chat) == "it" else
+                     " I also wrote to the facility about how to welcome you best on the day.")
     when = _visit_when(_find_offer(chat, city.agent_id, picked) if picked else {}, _lang(chat))
     if when:
         sentence = f"{sentence} {when}"
@@ -750,6 +756,21 @@ async def _forward_receipt(city: City, message: Message, chat: list[Message]) ->
         city, citizen, f"booking.receipt booking_id={booking_id} ledger_ref={ledger_ref} {sentence}"
     ):
         _RECEIPTS.discard(booking_id)
+
+
+def _visit_note(chat: list[Message], booking_id: str) -> str:
+    """What our facility should know before the visit: only what the citizen told us for it."""
+
+    said = _lang(chat)
+    needs = ["parla italiano" if said == "it" else
+             f"preferisce comunicare in inglese (lingua indicata: {said})"]
+    if _needs_access(chat):
+        needs.append("ha segnalato esigenze di accessibilità")
+    if _gender(chat):
+        needs.append("ha chiesto un medico " + ("donna" if _gender(chat) == "f" else "uomo"))
+    return (f"Grazie, ricevuta arrivata e girata al cittadino (booking_id={booking_id}). Per "
+            f"accoglierlo bene il giorno della visita: {'; '.join(needs)}. Potete tenerne conto "
+            "allo sportello? Se sul posto cambia qualcosa scrivetemi e lo avviso io.")
 
 
 _DAY_NAMES = {"mon": ("lunedì", "Monday"), "tue": ("martedì", "Tuesday"),
