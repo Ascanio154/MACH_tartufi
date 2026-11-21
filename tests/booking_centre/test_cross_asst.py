@@ -95,9 +95,11 @@ class AskPartners(_Fresh):
         self.assertNotIn(HOSP, targets)
         self.assertTrue(targets <= {PX1, PX2, PX3, PX4})
         for _, text in sent:
-            # MACH-1.2: search criteria only (lang, deadline), never the citizen or the referral.
+            # MACH-1.4: search criteria only (lang, window, lease), never the citizen or the referral.
             self.assertEqual(keys(text), {"service_type", "procedure", "priority", "request_id",
-                                          "lang", "deadline"})
+                                          "lang", "deadline", "after", "mach", "lease_s"})
+            self.assertIn("mach=1.4", text.split())
+            self.assertIn("after=2026-11-24T00:00:00+01:00", text.split())  # now + 16 agenda hours
             self.assertIn("lang=it", text.split())
             self.assertNotIn("citizen", text)
             self.assertNotIn(RX, text)

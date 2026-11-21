@@ -367,6 +367,12 @@ async def _partner_peers(
     return keep
 
 
+_MACH = "1.4"  # ring protocol we declare; every 1.3/1.4 token is optional for a 1.2 partner
+# Seconds we ask a partner to keep its offered slots for us: the measured chain (offer, citizen's
+# answer, consent, confirm) takes about 20 real minutes. 1.4 allows up to 1800.
+_LEASE_ASK = 1200
+
+
 async def _ask_partners(
     city: City,
     chat: list[Message],
@@ -397,7 +403,8 @@ async def _ask_partners(
     if priority:
         parts.append(f"priority={priority}")
     parts.extend(_ring_criteria(chat, priority))
-    parts.append(token)
+    # MACH-1.4: who declares itself gets the offered slots reserved for lease_s real seconds.
+    parts += [f"mach={_MACH}", f"lease_s={_LEASE_ASK}", token]
     sent_now = False
     limit = _MAX_PARTNERS if _lang(chat) in {"it", "en"} else _MAX_PARTNERS_RARE
     peers = [peer for peer in await _partner_peers(city, procedure, ours, _district(chat),
@@ -441,6 +448,10 @@ def _ring_criteria(chat: list[Message], priority: str | None) -> list[str]:
     if now is not None and priority in _DEADLINE_DAYS:
         end = (_born(chat) or now) + timedelta(days=_DEADLINE_DAYS[priority]) - _BORN_MARGIN
         found.append(f"deadline={end.isoformat(timespec='seconds')}")
+    if now is not None:
+        # MACH-1.3 R4: the asker sets the window. Anything sooner we drop ourselves (fitting).
+        start = now + (_LEAD if priority == "U" else _LEAD_SLOW)
+        found.append(f"after={start.isoformat(timespec='seconds')}")
     return [item for item in found if re.fullmatch(r"[a-z_]+=[A-Za-z0-9:/+.-]+", item)]
 
 
