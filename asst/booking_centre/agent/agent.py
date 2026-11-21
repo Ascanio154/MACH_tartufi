@@ -595,6 +595,8 @@ async def _warm_line(city: City, text: str, lang: str) -> str:
     """One warm sentence for this citizen from the city model; "" when it is not safe to send."""
 
     said = " ".join(t for t in text.split() if "=" not in t and t.lower() not in _ACT_WORDS)
+    if not said.strip():
+        return ""  # only act word and tokens: nothing to acknowledge, no model call
     ask = ("You are a clerk at a public hospital booking desk. Reply with ONE sentence of at most "
            f"25 words, in {'Italian, formal (lei)' if lang == 'it' else 'English'}, that warmly "
            "acknowledges what this citizen wrote and their worry, in a respectful tone. No medical "
