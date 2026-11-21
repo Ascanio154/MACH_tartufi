@@ -303,6 +303,20 @@ class OtherAsstsAskUs(_Fresh):
         self.assertIn("procedure=VIS-FIS", lines[0].split())
         self.assertIn(f"request_id=rq-{ask.msg_id}", lines[0].split())
 
+    async def test_asker_window_narrows_ours_and_the_no_says_when(self) -> None:
+        # MACH-1.3 R4 / 1.4 R16. Free slots run from the 24th 09:00 to the 26th.
+        city = PartnerCity(partner_case())
+        await desk(city, msg(PARTNER, "need.request procedure=VIS-FIS priority=D request_id=w1 "
+                                      "after=2026-11-25T09:00 deadline=2026-11-25T12:00:00+01:00",
+                             AGENT))
+        ids = {t for line in offer_lines(city.sent_to(PARTNER)[0]) for t in line.split()
+               if t.startswith("slot_id=")}
+        self.assertEqual(ids, {"slot_id=S-5", "slot_id=S-6"})
+        await desk(city, msg(PARTNER, "need.request procedure=VIS-FIS priority=D request_id=w2 "
+                                      "deadline=2026-11-24T08:00:00+01:00", AGENT))
+        self.assertEqual(city.sent_to(PARTNER)[1], "cancel request_id=w2 reason=no_availability "
+                                                   "next_free=2026-11-24T09:00:00+01:00")
+
     async def test_no_slot_is_a_cancel(self) -> None:
         case = partner_case()
         case[-1] = msg(LEDGER, "slots procedure=VIS-FIS page=1/1\n" + PAST_ONLY[0], AGENT)

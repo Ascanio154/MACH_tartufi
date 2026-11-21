@@ -670,11 +670,16 @@ def _desk_partner_slots(
     lang: str = "",
     gender: str = "",
     days: set[str] | None = None,
+    after: datetime | None = None,
+    deadline: datetime | None = None,
+    open_end: bool = False,
 ) -> list[dict[str, str]]:
     """Free slots of any of our facilities inside the priority window, spread, at most six.
 
     A partner may pass the citizen's ``lang``, ``gender`` and ``days`` (shared ring format):
     language and gender filter by our doctor table, days only put those slots first.
+    MACH-1.3 R4: the asker's ``after`` and ``deadline`` only narrow our own window.
+    ``open_end`` drops the far end of the window (the first free date for ``next_free``).
     """
 
     if priority == "U":
@@ -684,6 +689,12 @@ def _desk_partner_slots(
     else:
         horizon = now + timedelta(days=_DEADLINE_DAYS.get(priority or "", 14))
     earliest = now + (_LEAD if priority == "U" else _LEAD_SLOW)
+    if after is not None:
+        earliest = max(earliest, after - timedelta(seconds=1))  # a slot at ``after`` is inside
+    if deadline is not None and (horizon is None or deadline < horizon):
+        horizon = deadline
+    if open_end:
+        horizon = None
     timed: list[tuple[datetime, dict[str, str]]] = []
     for line in lines:
         slot = fields_of(line)
@@ -707,6 +718,16 @@ def _desk_partner_slots(
         timed.append((at, slot))
     timed.sort(key=lambda item: (item[0], item[1]["slot_id"]))
     return _pick([slot for _, slot in timed], days or set())
+
+
+def _ring_when(value: str, now: datetime) -> datetime | None:
+    """A partner's ``after``/``deadline``: agenda time, read in the agenda's zone when it has none."""
+
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=now.tzinfo)
 
 
 async def _answer_partner(city: City, message: Message, chat: list[Message]) -> None:
@@ -751,17 +772,22 @@ async def _answer_partner(city: City, message: Message, chat: list[Message]) -> 
     if world is None or now is None:
         await _say(city, partner, f"cancel {token} reason=facility_unavailable")
         return
+    lines = [line for line in world.splitlines() if "slot_id=" in line]
+    criteria = {"now": now, "priority": priority, "procedure": procedure,
+                "lang": fields.get("lang", "").lower(),
+                "gender": fields.get("gender", fields.get("gender_preference", "")).lower()[:1]}
     slots = _desk_partner_slots(
-        [line for line in world.splitlines() if "slot_id=" in line],
-        now=now,
-        priority=priority,
-        procedure=procedure,
-        lang=fields.get("lang", "").lower(),
-        gender=fields.get("gender", fields.get("gender_preference", "")).lower()[:1],
+        lines,
         days={_DAY_KEYS.get(part[:3].lower(), "") for part in re.split(r"[/,;|]+", fields.get("days", ""))} - {""},
+        after=_ring_when(fields.get("after") or fields.get("earliest", ""), now),
+        deadline=_ring_when(fields.get("deadline", ""), now),
+        **criteria,
     )
     if not slots:
-        await _say(city, partner, f"cancel {token} reason=no_availability")
+        # MACH-1.4 R16: the "no" says when, if the page we read shows a later free slot.
+        later = _desk_partner_slots(lines, open_end=True, **criteria)
+        hint = f" next_free={later[0]['at']}" if later else ""
+        await _say(city, partner, f"cancel {token} reason=no_availability{hint}")
         return
     rows: list[str] = []
     for slot in slots:
