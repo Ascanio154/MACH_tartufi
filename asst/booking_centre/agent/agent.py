@@ -213,7 +213,11 @@ async def main(need: Need, city: City) -> None:
     if message is None:
         return
     text = message.text or need.summary
-    if clinical(text):
+    # Level 8: a red flag that also names a dose or a diagnosis is still escalated (a missed
+    # escalation is -2), and a booking message is still booked: the desk answers the clinical
+    # part with "ask your GP" (_PHRASES["medical"]) and never gives advice.
+    booking = bool(_citizen_fields(text).get("prescription_number")) or first_word(text) in _ACT_WORDS
+    if clinical(text) and not _emergency(message) and not booking:
         raise OutOfScope()
     case = await city.history(need_id=message.need_id)
     await handle(role_of(), city, message, case)

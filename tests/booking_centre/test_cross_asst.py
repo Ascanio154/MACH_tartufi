@@ -744,3 +744,50 @@ class LiveAfter1022(_Fresh):
         self.assertEqual(bc._next_page(ahead, now, "B", frozenset({1, 5})), 4)
         self.assertEqual(bc._next_page(page(4, "2026-11-23", "2026-11-27"), now, "B",
                                        frozenset({1, 4, 5})), 0)
+
+
+class Level8RedFlagAndRuleChange(_Fresh):
+    async def run_main(self, text: str) -> PartnerCity:
+        import os
+        from city_sdk.city import Need
+        first = msg(CIT, text, AGENT)
+        city = PartnerCity([first], peers=[])
+        city.inbound = first
+        os.environ["CITY_ROLE"] = "booking_centre"
+        try:
+            await bc.main(Need(summary=text), city)
+        finally:
+            os.environ.pop("CITY_ROLE", None)
+        return city
+
+    async def test_red_flag_with_a_dose_is_escalated_not_refused(self) -> None:
+        city = await self.run_main("Ho preso 500 mg di aspirina ma ho ancora dolore al petto")
+        self.assertTrue(city.sent_to(CIT)[0].startswith("escalate.emergency reason=red_flag"))
+
+    async def test_clinical_question_without_booking_is_still_out_of_scope(self) -> None:
+        with self.assertRaises(bc.OutOfScope):
+            await self.run_main("Che dose di ibuprofene devo prendere?")
+
+    async def test_booking_message_with_a_clinical_word_is_served(self) -> None:
+        city = await self.run_main(
+            f"Il medico mi ha diagnosticato una lombalgia. need.request prescription_number={RX}")
+        self.assertTrue(city.attempts)   # it asks the Ledger instead of refusing the citizen
+
+    async def test_nothing_is_booked_after_an_escalation(self) -> None:
+        city = PartnerCity(booking_chat(), peers=peers())
+        await citizen_says(city, "Adesso mi manca il respiro e sto per svenire")
+        self.assertTrue(city.sent_to(CIT)[-1].startswith("escalate.emergency"))
+        await citizen_says(city, f"need.request prescription_number={RX} lang=it")
+        self.assertEqual(offer_messages(city), [])
+        self.assertIn("112", city.sent_to(CIT)[-1])
+        self.assertFalse(city.sent_to(CIT)[-1].startswith("escalate"))   # escalated once
+
+    async def test_rule_named_in_words_expires_an_old_referral(self) -> None:
+        chat = booking_chat()
+        chat.append(msg(bc.LEDGER, "rules count=1 prescription validity 2 agenda days", AGENT))
+        chat.append(msg(bc.LEDGER, "agenda agenda_now=2026-11-26T08:00:00+01:00", AGENT))
+        city = PartnerCity(chat, peers=[])
+        city.inbound = chat[0]
+        await advance(city)
+        self.assertIn("purpose=prescription_renewal", city.sent_to(CIT)[-1])
+        self.assertEqual(offer_messages(city), [])

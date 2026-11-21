@@ -246,7 +246,8 @@ def _p1_active(chat: list[Message], now: datetime | None) -> bool:
                 when = _when(later.partition("=")[2])
                 return when is None or now is None or when <= now
         return True
-    return False
+    # Level 8, "a new care rule": the reply may name the rule in words instead of "P1".
+    return re.search(r"validit|expir|scad", row.text, re.IGNORECASE) is not None
 
 
 def _expired(text: str, chat: list[Message]) -> bool:
@@ -268,7 +269,9 @@ def _expired(text: str, chat: list[Message]) -> bool:
         issued = _when(fields.get(key, ""))
         if issued is not None:
             return _agenda_span(issued, now) >= timedelta(days=_RX_VALID_DAYS)
-    return False
+    # No issue date on the row: the case's first agenda read is the earliest we know of it.
+    born = _born(chat)
+    return born is not None and _agenda_span(born, now) >= timedelta(days=_RX_VALID_DAYS)
 
 
 async def _ask_renewal(

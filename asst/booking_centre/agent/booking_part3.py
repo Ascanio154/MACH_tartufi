@@ -233,6 +233,8 @@ async def _advance_alone(
             _LOG.info("care.ledger.rules %s", rules.text[:300])
         if row is not None and number:
             _LOG.info("care.ledger.rx %s", row.text[:300])
+            if len(row.text) > 300:
+                _LOG.info("care.ledger.rx.tail %s", row.text[300:700])
             if _expired(row.text, chat):
                 await _ask_renewal(city, citizen, number, _lang(chat), chat, agent, key)
                 return

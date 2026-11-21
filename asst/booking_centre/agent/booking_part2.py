@@ -76,6 +76,12 @@ async def _desk_turn(
             sentence = _EMERGENCY_IT if _lang(chat) == "it" else _EMERGENCY_EN
             await _say(city, message.sender, f"escalate.emergency reason=red_flag {sentence}")
         return
+    if citizen_turn and fixed is None and _we(chat, city.agent_id, "escalate.emergency",
+                                              to=message.sender, word="escalate.emergency"):
+        # Level 8: the case stopped at the emergency. Nothing is booked after it; a later
+        # message gets the same instruction in plain words, never silence and never an offer.
+        await _say(city, message.sender, _EMERGENCY_IT if _lang(chat) == "it" else _EMERGENCY_EN)
+        return
     key = message.need_id or message.msg_id
     if agent_turn and fixed is None and head not in _ACT_WORDS and message.sender in (
         _partners_asked(chat, city.agent_id, key)
@@ -228,12 +234,15 @@ _CHEST_BAD = (
 _LEGS = r"\b(gamb[ae]|legs?)\b"
 _LEGS_BAD = (
     r"\b(forza|debol|non (le )?sento|non riesco a muover|non si muov|cedono|paralizz|"
-    r"intorpidit|insensibil|strength|weak|numb|can'?t (feel|move)|cannot (feel|move)|paraly)"
+    r"intorpidit|addormentat|insensibil|strength|weak|numb|can'?t (feel|move)|"
+    r"cannot (feel|move)|giving way|give way|paraly)"
 )
 _RED_FLAG_RE = tuple(
     re.compile(rf"{a}.{{0,40}}{b}|{b}.{{0,40}}{a}", re.DOTALL)
     for a, b in ((_CHEST, _CHEST_BAD), (_LEGS, _LEGS_BAD))
-) + (re.compile(r"\binfarto\b|heart attack|\bictus\b|\bstroke\b|non riesco a respirare|can'?t breathe"),)
+) + (re.compile(r"\binfarto\b|heart attack|\bictus\b|\bstroke\b|non riesco a respirare|"
+               r"fatico a respirare|fatica a respirare|manca il respiro|can'?t breathe|cannot breathe|"
+               r"sto per svenire|sono svenut|perso conoscenza|passed out|fainted"),)
 
 # Sentences around the tokens. None of them holds an act word on its own (offer, confirm,
 # cancel, consent, prescription, report, checkin, hold): understood() reads the LAST act word
