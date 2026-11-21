@@ -852,3 +852,11 @@ class SharedLedgerAnswers(_Fresh):
         bc._AGENDA[:] = [bc._when("2026-11-27T23:00:00+00:00"), real]   # Friday 23:00, 2 min ago
         guess = bc._agenda_guess()
         self.assertEqual((guess.weekday(), guess.hour), (0, 1))           # Monday 01:00
+
+    async def test_a_later_turn_reads_the_computed_agenda_not_the_case_old_row(self) -> None:
+        import datetime as dt
+        chat = booking_chat()
+        old = bc._when(bc._ledger(chat, "agenda")["agenda_now"])
+        bc._AGENDA[:] = [old + dt.timedelta(hours=5), dt.datetime.now(dt.timezone.utc)]
+        seen = bc._when(bc._ledger(bc._cached(chat), "agenda")["agenda_now"])
+        self.assertGreaterEqual(seen, old + dt.timedelta(hours=5))

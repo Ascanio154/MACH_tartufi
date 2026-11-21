@@ -444,10 +444,13 @@ def _cached(rows: list[Message]) -> list[Message]:
     _learn(rows)
     need = next((row.need_id for row in rows if row.need_id), None)
     texts: list[str] = []
-    if not _has_agenda(rows):
-        guess = _agenda_guess()
-        if guess is not None:
-            texts.append("agenda agenda_now=" + guess.isoformat())
+    # The case's own agenda row is from its first turn: at a cancel minutes later it is hours of
+    # agenda behind and the new offer repeated slots already past (88 "reason=past" in one night).
+    # The computed time goes last, so it is the one every later read of the agenda finds.
+    guess = _agenda_guess()
+    seen = _when((_ledger(rows, "agenda") or {}).get("agenda_now", ""))
+    if guess is not None and (seen is None or guess > seen):
+        texts.append("agenda agenda_now=" + guess.isoformat())
     procedure = (_ledger(rows, "prescription") or {}).get("procedure", "")
     if procedure and _latest_slots(rows) is None:
         texts += _world_cached(procedure)
