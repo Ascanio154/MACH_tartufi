@@ -370,3 +370,35 @@ class ExclusiveOffers(unittest.IsolatedAsyncioTestCase):
         city = FakeCity(chat)
         await bc._desk_turn(city, city.inbound, list(city.chat), hold_self=False, fixed=None)
         self.assertNotIn(back, bc._SHOWN)
+
+
+class PastSlots(unittest.IsolatedAsyncioTestCase):
+    """A confirm for a slot already past is never forwarded (33 confirms, no receipt)."""
+
+    def setUp(self) -> None:
+        reset_memory()
+
+    def _case(self, agenda_now: str) -> FakeCity:
+        from datetime import datetime, timezone
+
+        bc._AGENDA[:] = [bc._when(agenda_now), datetime.now(timezone.utc)]
+        chat = booking_chat()
+        offer = bc._offer_block([bc.fields_of(DEFAULT_SLOTS[2])], RX, "D", "it")  # S-3, Tue 09:00
+        chat.append(msg(AGENT, offer, CIT))
+        chat.append(msg(CIT, "confirm consent_ref=cons-1-booking offer_id=of-S-3", AGENT))
+        return FakeCity(chat)
+
+    async def test_past_slot_is_cancelled_and_replaced(self) -> None:
+        city = self._case("2026-11-24T10:00:00+01:00")  # an hour after the slot
+        await bc._desk_turn(city, city.inbound, list(city.chat), hold_self=False, fixed=None)
+        self.assertEqual(city.sent_to(HOSP), [])
+        to_citizen = city.sent_to(CIT)
+        self.assertTrue(to_citizen[0].startswith("cancel offer_id=of-S-3 reason=past"))
+        fresh = {bc.fields_of(line)["slot_id"] for text in to_citizen[1:] for line in offer_lines(text)}
+        self.assertTrue(fresh)
+        self.assertNotIn("S-3", fresh)
+
+    async def test_slot_still_ahead_is_forwarded(self) -> None:
+        city = self._case("2026-11-23T08:00:00+01:00")  # the day before
+        await bc._desk_turn(city, city.inbound, list(city.chat), hold_self=False, fixed=None)
+        self.assertTrue(any(text.startswith("confirm offer_id=of-S-3") for text in city.sent_to(HOSP)))

@@ -395,6 +395,19 @@ def _booked(chat: list[Message], agent: str, citizen: str) -> bool:
     )
 
 
+def _gone(offer: dict[str, str]) -> bool:
+    """True when the offered time is past, or too close for a hold to reach the Ledger in time.
+
+    21/11 10:36-11:11: 33 confirms, no receipt. Citizens confirmed (and repeated every 15
+    minutes) slots already past, we forwarded them and listed them again as "still valid".
+    Unknown agenda time or no date in the offer (waiting list): not gone.
+    """
+
+    when = _when(offer.get("agenda_date") or offer.get("at", ""))
+    now = _agenda_guess()
+    return when is not None and now is not None and when < now + _LEAD
+
+
 def _open_offers(chat: list[Message], agent: str, citizen: str) -> list[dict[str, str]]:
     """The offers the citizen can still pick: our latest offer message, minus cancelled ones."""
 
@@ -420,7 +433,8 @@ def _open_offers(chat: list[Message], agent: str, citizen: str) -> list[dict[str
         return []
     remembered = _LAST_OFFERS.get(citizen, [])
     pool = remembered or latest
-    return [o for o in pool if o.get("offer_id") not in cancelled and o.get("offer_id")]
+    return [o for o in pool
+            if o.get("offer_id") not in cancelled and o.get("offer_id") and not _gone(o)]
 
 
 def _choice(text: str, offers: list[dict[str, str]]) -> dict[str, str] | None:

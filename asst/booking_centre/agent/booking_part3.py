@@ -549,6 +549,17 @@ async def _on_confirm(
             await _say(city, message.sender, _phrase("unknown_offer", _lang(chat), chat=chat,
                                                      agent=agent, citizen=message.sender))
             return
+        if _gone(offer):
+            # Never forward a slot that is already past: say so and send new ones in this turn.
+            mark = (message.sender, offer_id)
+            if mark not in _CANCELS_SENT:
+                _CANCELS_SENT.add(mark)
+                why = ("Questo orario è ormai passato: le propongo subito altre date."
+                       if _lang(chat) == "it" else
+                       "That time has already passed: I am sending you new dates right away.")
+                await _say(city, message.sender, f"cancel offer_id={offer_id} reason=past {why}")
+            await _advance(city, message, chat, fixed=None, replacing=True)
+            return
         # Level 5 (rule P2): a partner's own offer_id can start with "of-" too (Bovisa, journey
         # 134), so the facility decides, never the id.
         partner_slot = bool(facility) and facility not in _own_facilities(chat) | _TEAM_AGENTS
