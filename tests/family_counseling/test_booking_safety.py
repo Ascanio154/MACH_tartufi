@@ -281,3 +281,68 @@ class Level8RedFlags(unittest.IsolatedAsyncioTestCase):
         city = LedgerCity()
         await citizen_says(city, "Buongiorno, vorrei un appuntamento al consultorio per un colloquio")
         self.assertFalse(any(t.startswith("escalate.emergency") for t in city.to_citizen()))
+
+
+
+class ModelCity(LedgerCity):
+    def __init__(self, answer):
+        super().__init__()
+        self.answer = answer
+        self.asked = 0
+
+    async def llm(self, messages, **kwargs):
+        self.asked += 1
+        if isinstance(self.answer, Exception):
+            raise self.answer
+        return {"content": self.answer}
+
+
+class Level8EverydayWords(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        fc._FAMILY_CASES.clear()
+        fc._ASKED_MODEL.clear()
+
+    async def run_main(self, city, text):
+        message = msg(CIT, text, AGENT)
+        city.chat.append(message)
+        city.inbound = message
+        with mock.patch.object(fc, "role_of", return_value="family_counseling"):
+            await fc.main(SimpleNamespace(is_emergency=False, summary=text), city)
+        return [t for t in city.to_citizen() if t.startswith("escalate.emergency")]
+
+    async def test_everyday_words_escalate_without_the_model(self):
+        for text in ("Mi manca l\u2019aria e ho il fiato corto, vorrei un colloquio",
+                     "Ieri ho perso i sensi in cucina",
+                     "Le gambe non mi reggono più da stamattina",
+                     "Ho la bocca storta e non riesco a parlare bene",
+                     "Non ce la faccio più, voglio farla finita",
+                     "I'm short of breath and I collapsed this morning"):
+            fc._FAMILY_CASES.clear()
+            city = ModelCity("NO")
+            self.assertTrue(await self.run_main(city, text), text)
+            self.assertEqual(city.asked, 0, text)
+            self.assertEqual(city.to_ledger("hold"), [])
+
+    async def test_model_catches_what_the_patterns_miss(self):
+        city = ModelCity("SI")
+        said = await self.run_main(city, "Sono incinta e perdo tantissimo sangue con un dolore fortissimo")
+        self.assertTrue(said)
+        self.assertEqual(city.asked, 1)
+
+    async def test_ordinary_worries_never_escalate_nor_ask_the_model(self):
+        for text in ("Ho molta ansia e litighiamo spesso in famiglia, vorrei un colloquio",
+                     "Vorrei informazioni sulla contraccezione",
+                     "Mio figlio adolescente non mi parla più"):
+            fc._FAMILY_CASES.clear()
+            city = ModelCity("SI")
+            self.assertEqual(await self.run_main(city, text), [], text)
+            self.assertEqual(city.asked, 0, text)
+
+    async def test_model_no_or_failure_keeps_the_normal_path(self):
+        for answer in ("NO", TimeoutError()):
+            fc._FAMILY_CASES.clear()
+            fc._ASKED_MODEL.clear()
+            city = ModelCity(answer)
+            said = await self.run_main(city, "Ho un po' di mal di testa, vorrei un appuntamento")
+            self.assertEqual(said, [])
+            self.assertEqual(city.asked, 1)

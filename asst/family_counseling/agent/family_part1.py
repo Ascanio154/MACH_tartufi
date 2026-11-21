@@ -8,7 +8,7 @@ from __future__ import annotations
 def _emergency(message: Message) -> bool:
     if understood(message).body.get("is_emergency") is True:
         return True
-    lowered = message.text.lower()
+    lowered = _fc_plain(message.text)  # lower case, no accents, straight apostrophes
     if any(flag in lowered for flag in _RED_FLAGS):
         return True
     return any(pattern.search(lowered) for pattern in _RED_FLAG_RE)
