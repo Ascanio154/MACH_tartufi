@@ -404,16 +404,62 @@ async def _on_checked_in(
         return
     if _we(chat, city.agent_id, token, to=LEDGER, word="report"):
         return
+    consent_ref = ""
     if citizen:
-        # Ask consent to share the report; the citizen's answer files it (see _on_report_consent).
+        # Ask consent to share the report, wait briefly for the answer, then file the report
+        # anyway: silence counts as a no (filed unshared), like a plain-words refusal.
         if not _we(chat, city.agent_id, token, to=citizen, word="consent"):
             await _say(
                 city,
                 citizen,
                 f"consent purpose=report_sharing {token} Posso condividere il suo referto?",
             )
-        return
-    await _file_report(city, message, chat, booking_id, consent_ref="")
+        chat = await _until(
+            city,
+            message.need_id,
+            chat,
+            lambda rows: _consent_answer(rows, city.agent_id, citizen) is not None,
+        )
+        answer = _consent_answer(chat, city.agent_id, citizen)
+        if answer is not None:
+            consent_ref = _report_consent_ref(answer, chat, city.agent_id)
+    await _file_report(city, message, chat, booking_id, consent_ref=consent_ref)
+
+
+def _consent_answer(chat: list[Message], agent: str, citizen: str) -> Message | None:
+    """The citizen's first message after our latest report_sharing question, if any."""
+
+    asked = -1
+    for index, row in enumerate(chat):
+        if (
+            row.sender == agent
+            and row.recipient == citizen
+            and first_word(row.text) == "consent"
+            and "purpose=report_sharing" in row.text.split()
+        ):
+            asked = index
+    if asked < 0:
+        return None
+    for row in chat[asked + 1 :]:
+        if row.sender == citizen:
+            return row
+    return None
+
+
+def _report_consent_ref(answer: Message, chat: list[Message], agent: str) -> str:
+    """The consent_ref in the citizen's answer, or "" for a refusal (any answer without one)."""
+
+    fields = fields_of(answer.text)
+    ref = fields.get("consent_ref", "")
+    if fields.get("purpose", "report_sharing") != "report_sharing":
+        return ""
+    if ref in _booking_consents(chat, agent):
+        return ""
+    return ref
+
+
+# Bookings whose report this process has started to write.
+_FILING: set[str] = set()
 
 
 def _report_pending(chat: list[Message], agent: str, citizen: str) -> str:
@@ -453,11 +499,7 @@ async def _on_report_consent(city: City, message: Message, chat: list[Message]) 
     booking_id = _report_pending(chat, city.agent_id, message.sender)
     if not booking_id:
         return
-    fields = fields_of(message.text)
-    ref = fields.get("consent_ref", "")
-    purpose = fields.get("purpose", "report_sharing")
-    if purpose != "report_sharing" or ref in _booking_consents(chat, city.agent_id):
-        ref = ""
+    ref = _report_consent_ref(message, chat, city.agent_id)
     await _file_report(city, message, chat, booking_id, consent_ref=ref)
 
 
@@ -468,6 +510,11 @@ async def _file_report(
 
     token = f"booking_id={booking_id}"
     if not _we(chat, city.agent_id, token, to=LEDGER, word="report"):
+        # Two turns of one case can run at once (the check-in turn waiting for consent and
+        # the consent answer's own turn): only the first one writes the report.
+        if booking_id in _FILING:
+            return
+        _FILING.add(booking_id)
         parts = ["report", token, "outcome_code=VISIT"]
         if consent_ref:
             parts.append(f"consent_ref={consent_ref}")
