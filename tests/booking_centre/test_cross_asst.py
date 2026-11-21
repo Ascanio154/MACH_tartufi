@@ -860,3 +860,14 @@ class SharedLedgerAnswers(_Fresh):
         bc._AGENDA[:] = [old + dt.timedelta(hours=5), dt.datetime.now(dt.timezone.utc)]
         seen = bc._when(bc._ledger(bc._cached(chat), "agenda")["agenda_now"])
         self.assertGreaterEqual(seen, old + dt.timedelta(hours=5))
+
+    async def test_the_deadline_runs_from_the_first_message_of_the_case(self) -> None:
+        import datetime as dt
+        chat = self.stamped(booking_chat(), 0)
+        agenda = next(r for r in chat if r.sender == bc.LEDGER and r.text.startswith("agenda"))
+        at = bc._when(agenda.sent_at)
+        import dataclasses
+        chat[0] = dataclasses.replace(chat[0], sent_at=(at - dt.timedelta(minutes=10)).isoformat())  # issued 10 real minutes before
+        seen = bc._when(bc.fields_of(agenda.text)["agenda_now"])
+        born = bc._born(chat)
+        self.assertLessEqual(born, seen - dt.timedelta(hours=10) + dt.timedelta(minutes=1))

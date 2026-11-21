@@ -170,6 +170,16 @@ def _born(chat: list[Message]) -> datetime | None:
     for row in chat:
         if row.sender == LEDGER and first_word(row.text) == "agenda":
             seen = _when(fields_of(row.text).get("agenda_now", ""))
+            # The referral was issued when the case's first message was sent, minutes (agenda
+            # hours) before this read: night of 21/11 the first read came 7-20 h of agenda late
+            # and every slot offered to a B priority was refused with reason=deadline.
+            stamps = [_when(r.sent_at or "") for r in chat]
+            first = min((s for s in stamps if s is not None), default=None)
+            at = _when(row.sent_at or "") or datetime.now(timezone.utc)
+            if seen is not None and first is not None and first < at:
+                seen -= min(60 * (at - first), timedelta(days=1))
+                if seen.weekday() >= 5:
+                    seen -= timedelta(days=2)
             if seen is not None and (need not in _BORN or seen < _BORN[need]):
                 if len(_BORN) > _SENT_NEEDS:
                     _BORN.clear()
