@@ -297,8 +297,10 @@ def deploy(job: dict, state: dict, dry: bool) -> None:
             log(f"{agent} {target} live despite '{outcome}' report (not certified)")
             break
         failures += 1
-        last = [line for line in out.splitlines() if "✗" in line][-1:] or [out.strip()[-160:]]
-        log(f"{agent} {target} failed ({failures}/{RETRIES}): {last[0][:160]}")
+        stamp = datetime.now().strftime("%H%M%S")
+        (DEPLOY_DIR / f"fail-{agent}-{target}-{stamp}.txt").write_text(out)
+        last = [line for line in out.splitlines() if "✗" in line] or [out.strip()[-400:]]
+        log(f"{agent} {target} failed ({failures}/{RETRIES}): {' | '.join(last[-3:])}")
         if failures >= RETRIES:
             job["status"] = "failed"
             break
