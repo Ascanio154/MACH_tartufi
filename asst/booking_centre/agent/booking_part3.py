@@ -273,6 +273,18 @@ async def _advance_alone(
             # The rules in force ride along with the first reads; nothing waits on them.
             if not _exact(chat, agent, "rules"):
                 await _say(city, LEDGER, "rules")
+            # The citizen has now asked to book. If our GP already named this exact referral,
+            # start the catalogue read alongside the referral and agenda reads. The old GP
+            # notice prefetch asked the Ledger for people who never booked and overloaded it.
+            notice = next((fields_of(row.text) for row in reversed(chat)
+                           if row.sender == _GP_AGENT and first_word(row.text) == "prescription"
+                           and fields_of(row.text).get("prescription_number") == number), {})
+            hinted = notice.get("procedure", "")
+            start = _TODAY_PAGE.get(hinted, 1)
+            if (hinted in _PARTNER_CAPABILITY
+                    and not _world_cached(hinted, _WORLD_REFRESH)
+                    and not _asked(chat, agent, hinted, start)):
+                await _say(city, LEDGER, f"world procedure={hinted} page={start}")
             asked = number
             chat = await _until(
                 city,

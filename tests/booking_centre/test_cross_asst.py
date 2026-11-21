@@ -853,6 +853,41 @@ class SharedLedgerAnswers(_Fresh):
                         recipient=row.recipient, body=dict(row.body),
                         sent_at=at if row.sender == bc.LEDGER else "") for row in chat]
 
+    async def test_citizen_starts_catalogue_read_while_referral_is_pending(self) -> None:
+        request = msg(CIT, f"need.request prescription_number={RX} lang=it", AGENT)
+        notice = msg(bc._GP, f"prescription prescription_number={RX} "
+                     "procedure=VIS-FIS priority=B", AGENT)
+        city = PartnerCity([request, notice], peers=[])
+        city.inbound = request
+        await advance(city)
+        asked = city.sent_to(bc.LEDGER)
+        self.assertIn(f"prescription prescription_number={RX}", asked)
+        self.assertIn("world procedure=VIS-FIS page=1", asked)
+
+    async def test_wrong_gp_notice_does_not_start_catalogue_read(self) -> None:
+        request = msg(CIT, f"need.request prescription_number={RX} lang=it", AGENT)
+        notice = msg(bc._GP, "prescription prescription_number=prescription_number-OTHER "
+                     "procedure=VIS-CARD priority=B", AGENT)
+        city = PartnerCity([request, notice], peers=[])
+        city.inbound = request
+        await advance(city)
+        self.assertFalse([text for text in city.sent_to(bc.LEDGER) if text.startswith("world ")])
+
+    async def test_late_ledger_deliveries_offer_without_citizen_resend(self) -> None:
+        full = booking_chat()
+        request = full[0]
+        notice = msg(bc._GP, f"prescription prescription_number={RX} "
+                     "procedure=VIS-FIS priority=D", AGENT)
+        city = PartnerCity([request, notice], peers=[])
+        city.inbound = request
+        await bc._desk(city, request, list(city.chat), hold_self=False, fixed=None)
+        self.assertFalse(offer_messages(city))
+        for answer in (full[4], full[5], full[7]):
+            city.chat.append(answer)
+            city.inbound = answer
+            await bc._desk(city, answer, list(city.chat), hold_self=False, fixed=None)
+        self.assertTrue(offer_messages(city), city.sent_to(CIT))
+
     async def test_next_case_asks_only_for_the_referral(self) -> None:
         bc._learn(self.stamped(booking_chat(), 5))            # another case read these 5 s ago
         full = booking_chat()
