@@ -376,19 +376,60 @@ async def _on_confirm(
     number = fields.get("prescription_number") or offer.get("prescription_number")
     book_here = hold_self or message.sender.startswith("agent:") or facility == agent
     if book_here:
-        if not _we(chat, agent, f"slot_id={slot}", to=LEDGER, word="hold"):
-            parts = ["hold", f"slot_id={slot}"]
-            if citizen:
-                parts.append(f"citizen={citizen}")
-            if number:
-                parts.append(f"prescription_number={number}")
-            parts.append(f"consent_ref={consent}")
-            if not await _say(city, LEDGER, " ".join(parts)):
-                return
-        await _finish_booking(city, message, chat, slot, hold_self=hold_self)
+        # Level 7: every confirm can arrive twice, at the same moment. One booking per slot:
+        # the second turn waits for the first, reads the case again and reuses its hold.
+        lock = _SLOT_LOCKS.setdefault(slot, asyncio.Lock())
+        async with lock:
+            try:
+                chat = await city.history(need_id=message.need_id)
+            except CapError:
+                pass
+            await _book_slot(city, message, chat, slot, citizen, number, consent, hold_self)
         return
     if not facility or not citizen:
         return
+    await _forward_confirm(city, chat, agent, offer_id, offer, slot, citizen, consent, facility, number)
+
+
+# Slots this process is booking right now (one lock per slot_id).
+_SLOT_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+async def _book_slot(
+    city: City,
+    message: Message,
+    chat: list[Message],
+    slot: str,
+    citizen: str,
+    number: str | None,
+    consent: str,
+    hold_self: bool,
+) -> None:
+    agent = city.agent_id
+    if not _we(chat, agent, f"slot_id={slot}", to=LEDGER, word="hold"):
+        parts = ["hold", f"slot_id={slot}"]
+        if citizen:
+            parts.append(f"citizen={citizen}")
+        if number:
+            parts.append(f"prescription_number={number}")
+        parts.append(f"consent_ref={consent}")
+        if not await _say(city, LEDGER, " ".join(parts)):
+            return
+    await _finish_booking(city, message, chat, slot, hold_self=hold_self)
+
+
+async def _forward_confirm(
+    city: City,
+    chat: list[Message],
+    agent: str,
+    offer_id: str,
+    offer: dict[str, str],
+    slot: str,
+    citizen: str,
+    consent: str,
+    facility: str,
+    number: str | None,
+) -> None:
     if _we(chat, agent, f"slot_id={slot}", to=facility, word="confirm"):
         return
     parts = [
