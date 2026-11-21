@@ -278,7 +278,10 @@ async def _advance_alone(
                 city,
                 message.need_id,
                 chat,
-                lambda rows: _rx_line(rows, agent, asked) is not None and _has_agenda(rows),
+                # An answer without a procedure ("not found", refused) ends the wait: no agenda is
+                # needed to ask for the number again (the smoke run waited 40 s per turn for it).
+                lambda rows: (line := _rx_line(rows, agent, asked)) is not None and (
+                    _has_agenda(rows) or "procedure" not in fields_of(line.text)),
             )
             continue
         if not procedure:

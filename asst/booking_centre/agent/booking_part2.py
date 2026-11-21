@@ -24,6 +24,7 @@ async def _desk(
     if message.sender == city.agent_id:
         return
     chat = _cached(chat)
+    _TURN_END.set(time.monotonic() + _TURN_BUDGET)
     if fixed is None and message.sender.startswith("agent:") and _partner_request(message):
         # MACH-1: first answer to a partner within 10 s; a plain "received" if the Ledger is slow.
         turn = asyncio.ensure_future(

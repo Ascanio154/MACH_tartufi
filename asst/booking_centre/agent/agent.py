@@ -77,6 +77,10 @@ _LOG = logging.getLogger("care")
 _PULL_TRIES = 20
 _PULL_PAUSE = 2.0
 _SHORT_TRIES = 3
+# All the waits of one turn together: a Ledger that never answers must not hold a message for
+# minutes (the deploy gate's smoke run timed out at 120 s with 40 s per wait and no cap).
+_TURN_BUDGET = 20.0  # ponytail: a guess under the message lease; raise if offers come late
+_TURN_END: contextvars.ContextVar[float] = contextvars.ContextVar("booking_turn_end", default=0.0)
 # Needs whose sent offers this process remembers; the oldest is forgotten first.
 _SENT_NEEDS = 4096
 # Every slot goes in ONE offer message: the citizen chooses in that turn, and a later message
@@ -672,7 +676,7 @@ async def _until(
             fresh = _cached(await city.history(need_id=need_id))
         except CapError:
             fresh = chat
-        if ready(fresh):
+        if ready(fresh) or (_TURN_END.get() and time.monotonic() > _TURN_END.get()):
             return fresh
         if attempt + 1 < tries:
             await asyncio.sleep(_PULL_PAUSE)
