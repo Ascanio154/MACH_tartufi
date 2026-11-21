@@ -21,6 +21,7 @@ fc._PULL_PAUSE = 0
 # Shared Ledger reads are off in these tests (each scenario controls its own clock);
 # SharedLedgerReads switches them on.
 fc._SHARED_AGENDA_FOR = fc._SHARED_WORLD_FOR = -1.0
+fc._LEAD = fc.timedelta(hours=8)  # the fixtures below are laid out around an 8 h margin
 
 AGENT = "agent:fc"
 CIT = "citizen:c9"

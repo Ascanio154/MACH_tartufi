@@ -27,7 +27,9 @@ _MAX_PAGE = 8
 # Agenda runs 60x and every message takes ~3.5 real minutes (= 3.5 agenda hours) to arrive:
 # offer -> citizen -> confirm costs ~7 agenda hours, so a slot must be at least 8 agenda hours
 # ahead when it is offered, or it is past at the hold (Sat morning: offers 4 days stale).
-_LEAD = timedelta(hours=8)
+# Sat 21/11 15:00: the citizen answers an offer 13-15 real minutes later (13-15 agenda hours),
+# then hold and commit each wait on the Ledger: 8 h was past at the citizen's reading.
+_LEAD = timedelta(hours=24)
 # Doctor key (the last segment of doctor_id) -> languages, gender, days. ``*`` is the ASST's
 # rare language. The Ledger's slot line names the doctor; it does not repeat this table.
 _DOCTORS: dict[str, tuple[frozenset[str], str, frozenset[str]]] = {
