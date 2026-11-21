@@ -650,7 +650,7 @@ async def _file_report(
         parts = ["report", token, "outcome_code=VISIT"]
         if consent_ref:
             parts.append(f"consent_ref={consent_ref}")
-        follow_up = await _follow_up(city, message, chat, booking_id)
+        follow_up = await _follow_up(city, message, chat, booking_id) if _FOLLOW_UP_ON else ""
         if follow_up:
             parts.append(f"follow_up_prescription_number={follow_up}")
         if not await _say(city, LEDGER, " ".join(parts)):

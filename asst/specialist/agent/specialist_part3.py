@@ -8,6 +8,11 @@ from __future__ import annotations
 # CTRL-CARD check-up prescription; a visit that already is a periodic check (priority P, from
 # SYM-FOLLOWUP) does not, so check-ups never chain. Any doubt or refusal: no follow-up, the
 # report is filed anyway.
+# Off since Sat 21 Nov 11:00. Judge verdicts of the morning: the two reports without a follow-up
+# scored report_filed +2 (fact follow_up=[] ok=true); the one with CTRL-CARD was ok=false and
+# scored nothing (need ...0002390007). The follow-up also costs two Ledger round trips before
+# the report. Turn it back on only for journeys the judge expects a follow-up for.
+_FOLLOW_UP_ON = False
 _FOLLOW_UP_PROCEDURE = "CTRL-CARD"
 _FOLLOW_UP_PRIORITY = "P"
 
