@@ -54,6 +54,7 @@ STATE_LOCK = threading.RLock()
 GIT_LOCK = threading.Lock()
 START_LOCK = threading.Lock()
 _LAST_START = [0.0]
+LAUNCHED: dict[str, threading.Event] = {}
 
 
 # --- pure helpers (unit-tested) ---------------------------------------------------------------
@@ -270,6 +271,7 @@ def deploy(job: dict, state: dict, dry: bool) -> None:
                 log(f"{agent}: waiting {int(gap)}s for the team quota slot")
                 time.sleep(gap)
             _LAST_START[0] = time.time()
+        LAUNCHED.setdefault(agent, threading.Event()).set()
         if dry:
             outcome, wait, out = "promoted", 0, "dry-run"
         else:
@@ -288,6 +290,11 @@ def deploy(job: dict, state: dict, dry: bool) -> None:
         if outcome == "timeout" and wait_live(agent, target, asst, 900):
             job["status"] = "live"
             log(f"{agent} {target} live after CLI timeout (not certified)")
+            break
+        # City Hall sometimes reports an error although the release went live: check first.
+        if live(agent, asst)[0] == target:
+            job["status"] = "live"
+            log(f"{agent} {target} live despite '{outcome}' report (not certified)")
             break
         failures += 1
         last = [line for line in out.splitlines() if "✗" in line][-1:] or [out.strip()[-160:]]
@@ -360,9 +367,17 @@ def run(args: argparse.Namespace) -> None:
                     del threads[agent]
                 state["queue"] = [j for j in state["queue"]
                                   if j["status"] in ("queued", "held", "deploying")]
+                # Strict queue order: start the next job only once the previous one has
+                # launched its city deploy (or finished), so slots go in queue order.
+                pending = [a for a, t in threads.items()
+                           if t.is_alive() and not LAUNCHED.get(a, threading.Event()).is_set()]
                 for job in state["queue"]:
+                    if pending:
+                        break
                     if job["status"] != "queued" or job["agent"] in threads:
                         continue
+                    LAUNCHED[job["agent"]] = threading.Event()
+                    pending.append(job["agent"])
                     job["status"] = "deploying"
                     thread = threading.Thread(target=_job_thread, args=(job, state, args.dry_run),
                                               name=job["agent"], daemon=True)
