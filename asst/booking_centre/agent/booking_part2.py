@@ -205,7 +205,9 @@ _CONFIRMED_BY: dict[str, str] = {}
 _USED: set[str] = set()
 # Slot -> (when, need) of our latest offer of it; _SHOWN_FOR seconds of head start for that need.
 _SHOWN: dict[str, tuple[float, str]] = {}
-_SHOWN_FOR = 40.0
+# 21/11: five citizens confirmed the same slot in one minute (40 s of head start, but a citizen
+# answers after 3-4 minutes); only one of them can get it.
+_SHOWN_FOR = 300.0
 # Procedure -> the world page that held today's slots for the last case: the next case starts
 # there instead of page 1 (one slow Ledger read less). Days only move forward.
 _TODAY_PAGE: dict[str, int] = {}
