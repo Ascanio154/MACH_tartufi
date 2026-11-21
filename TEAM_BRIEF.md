@@ -5,7 +5,7 @@
 >
 > **AI:** this brief is your context. Your human is on team **tartufi-pazzi** and may not be very technical: explain briefly in plain words and give exact commands to copy. Follow the rules below; breaking them costs the team points or makes the deploy fail.
 
-Last updated: Fri 20 Nov 2026, 23:35 (booking centre handed to Mattia). Pitch: **Sat 21 Nov, 16:00**.
+Last updated: Sat 21 Nov 2026, 05:05 (owners: booking centre → Asca, GP → Leo's Claude; automatic deploys). Pitch: **Sat 21 Nov, 16:00**.
 
 ---
 
@@ -19,19 +19,19 @@ The family counselling centre (consultorio) is **direct access**: citizens write
 
 | folder (in `asst/`) | role on card | capability | owner |
 |---|---|---|---|
-| `gp` | `gp` | `gp` | **Asca** |
+| `gp` | `gp` | `gp` | **Leo** (his Claude, from 21 Nov 04:38) |
 | `specialist` | `facility` | `specialist_care.cardiology` | **Riccardo** |
 | `hospital` | `facility` | `hospital.physiatry` | **Riccardo** |
 | `family_counseling` | `facility` | `family_counseling.gynecology` | **Mattia** (also watches the scoreboard) |
-| `booking_centre` | `booking_centre` | `booking_centre` | **Mattia** (from Leo, 20 Nov 23:35) |
+| `booking_centre` | `booking_centre` | `booking_centre` | **Asca** (Leo → Mattia 20 Nov 23:35 → Asca 21 Nov 00:55) |
 
-**Leo's Mac is the only machine that deploys.** You edit code; Leo deploys it.
+**Leo's Mac is the only machine that deploys.** It runs `scripts/deploy_runner.py`, which watches `main` and deploys every agent whose folder changed (compile + unit tests + `city run` smoke first, then picks the next version itself and rolls back a front door that goes down). You push; the runner deploys. **Code freeze: 21 Nov 06:00, push by 05:30.**
 
 ## 2. Current state (already done)
 
-- All 5 agents are **live in the city** (version 1.0.1).
-- They all run the official kit's **full care-journey brain**: the same file copied into each folder. The brain works out its role from `card.yaml` (a `facility` agent picks its job from the capability prefix). GP code is in `_gp`, booking in `_desk` / `_advance_alone`, facilities in `_facility` and the `_on_*` handlers, the consultorio in `_family`.
-- Each folder has **its own copy**. Editing `asst/gp/agent/agent.py` changes **only** the GP, even if you touch shared helper functions.
+- All 5 agents are **live in the city** (versions change often: check the console's Agenti page). We are at Levels 3-8 of the game.
+- They all started from the official kit's **full care-journey brain**: the same file copied into each folder. The brain works out its role from `card.yaml` (a `facility` agent picks its job from the capability prefix). GP code is in `_gp`, booking in `_desk` / `_advance_alone`, facilities in `_facility` and the `_on_*` handlers, the consultorio in `_family`.
+- Each folder has **its own copy**. Editing `asst/gp/agent/` changes **only** the GP, even if you touch shared helper functions. City Hall refuses big files, so gp, booking_centre and family_counseling are split: `agent.py` loads `<name>_part*.py` next to it (same module). Edit any file inside your own `agent/` folder.
 - Already working (tested): the GP prescribes from the protocol table and escalates red flags (including a plain "I have chest pain"). The booking centre checks prescriptions with the Ledger. Facilities record check-ins.
 
 ## 3. Links
@@ -63,10 +63,10 @@ Never commit your key and never paste it into a chat message. It belongs only in
 
 1. **Get the latest code:** `git pull` (or clone the repo the first time). Always pull before starting **and** right before pushing.
 2. In Huddle: `claim_task`, then `lock_paths asst/<your-folder>/**`.
-3. Edit **only** `asst/<your-folder>/agent/agent.py`.
+3. Edit **only** files inside `asst/<your-folder>/agent/`.
 4. **Test locally** (optional, needs the tools below): from the `asst/` folder run `city run <your-folder>`.
 5. **Commit and push** to branch `main`, then `release_paths`.
-6. In Huddle: `send_message` to Leo: *"please deploy `<folder>` (pushed commit `<id>`)"*. Leo deploys and confirms.
+6. The deploy runner on Leo's Mac picks up your push automatically. Tell the team in Huddle what you pushed (`send_message all`), and check the console that the new version went live.
 
 **Never run `city deploy` from your own computer**, even with the right roles set: the 5 live agents are tied to the `agent_id` in the `card.yaml` files in this repo, and a deploy from another machine can create a second set of agents. **Can't push?** Ask Asca to add your GitHub username; until then, send Leo your finished `agent.py` and he'll commit and deploy it.
 
@@ -79,7 +79,7 @@ Never commit your key and never paste it into a chat message. It belongs only in
 
 ## 6. Rules (from the kit; breaking them costs points or fails the deploy)
 
-- Edit **only** `agent.py`. **Never** touch `Dockerfile`, `card.yaml` or `city.yaml` (Leo's deploys update `card.yaml` automatically; editing it causes conflicts).
+- Edit **only** your `agent/` folder. **Never** touch `Dockerfile`, `card.yaml` or `city.yaml` (the deploy runner sets versions itself; editing `card.yaml` causes conflicts).
 - Talk to the city **only** through `city_sdk.city` (`city.find`, `city.say`, `city.history`, `city.llm`) plus the Python standard library. No HTTP, sockets or extra packages.
 - Messages are chat text: an **act word + `key=value` tokens**, e.g. `offer offer_id=o-1 slot_id=S-12 doctor_id=D-3 agenda_date=2026-11-18`. No JSON. **Put all slots in ONE offer message.**
 - **Write the Ledger first** (`city.say(LEDGER, "...")`), **then** tell the citizen. Never send a booking receipt without a Ledger commit (−2 "phantom booking").
@@ -93,10 +93,9 @@ Never commit your key and never paste it into a chat message. It belongs only in
 
 Each item below was checked against the current code.
 
-**Asca, GP (`gp`)**
-- The protocol table is **hardcoded** to 4 symptoms (`_PROTOCOLS`, `_KEYWORDS`). Read the real table from the Ledger (`world`) so every symptom gets the right procedure + priority (+2 each, −1 if wrong).
-- Extend the keyword fallback: citizens write in different tones (Gen Z, elderly, anxious, non-native, Italian/English).
-- **Prescription renewal** (rule change P1): a citizen sends only a `prescription_number`. Verify it, then issue a fresh prescription for the same procedure/priority. Not handled yet.
+**Leo, GP (`gp`)**, handed over from Asca's session on 21 Nov at 04:38.
+- Live: protocol table + red flags (incl. level-8 breathing/fainting as instant regex), P1 renewal, "Ho già avvisato io il centro prenotazioni" in every prescription. `cc53232`: no model call when keywords find the symptom (the model sentence cost 2-3 min under load); the model only classifies free text the keywords miss (4 s cap).
+- Known: ~20% `protocol_mismatch` in the verdicts, but the same text gets opposite verdicts (the judge uses the citizen's hidden profile), so the mapping stays as is. Details in `.deploy/gp-wrong.md` on Leo's Mac.
 
 **Riccardo, specialist (`specialist`), most important**
 - Right now the specialist files the report **immediately** after check-in (`outcome_code=VISIT`), **without asking consent** and **without a follow-up prescription**. Per the guide:
@@ -116,13 +115,15 @@ Each item below was checked against the current code.
 - Stricter data rules: ask only what's needed, always with `purpose=` (over-disclosure is −2).
 - Watch the scoreboard and post each new level's text in Huddle (`post_note`).
 
-**Mattia, booking centre (`booking_centre`)**, handed over by Leo on 20 Nov at 23:35. Leo stays the only deploy owner.
-- Already done (live in 1.0.5): one offer message (up to 6 slots), P1 renewal, reads `rules`, P3 U-reserve skip, hospital-down cancel, cross-ASST booking with `consent purpose=cross_asst`, and the confirm fix (`_find_offer`).
-- Waiting for deploy: main `796acaf` (booking_centre 1.0.6): one receipt per booking, closing message when no partner has a slot, partner `doctor_lang`/`doctor_gender`, our rare language = `si` only.
-- Gotcha: our own sent messages are not reliably found in `city.history`; keep in-memory marks too.
-- Ring format agreed on Discord (Giambellino `ka`, Toros, Gorla `sq`): `need.request service_type procedure priority request_id` → one message of `offer … doctor_lang doctor_gender request_id` or `cancel reason=no_availability`.
+**Asca, booking centre (`booking_centre`)**, owner since 21 Nov 00:55 (Leo → Mattia → Asca). Highest priority: it blocks points for everyone (no booking → no check-in, no report, no review).
+- Biggest loss (judge verdicts, 73 journeys 01:45-03:15): `booking_centre.wrong_outcome` no_booking **−48**. The citizen writes last and we never answer: `cancel offer_id=… reason=past` ×20, `reason=lang` ×10, `data.response` ×10, deadline/gender/day ×8, valid `confirm` ×2. The act word comes after a natural-language sentence, so it is not the first word.
+- Fix: answer every citizen cancel in the same turn with ONE new offer that avoids the reason (or a closing message); find the act word anywhere in the text; continue right after `data.response`; re-read agenda before a re-offer.
+- Keep turns short: long in-turn waits make the relay refuse renew/ack (422), as seen on the consultorio.
+- Ring format agreed on Discord (Giambellino `ka`, Toros, Gorla `sq`): `need.request service_type procedure priority request_id` → one message of `offer … doctor_lang doctor_gender request_id` or `cancel reason=no_availability`. Gotcha: our own sent messages are not reliably in `city.history`; keep in-memory marks too.
 - Designs: `docs/superpowers/specs/2026-11-20-booking-centre-quick-wins-design.md`, `docs/superpowers/specs/2026-11-20-cross-asst-booking-design.md`. Tests: `tests/booking_centre/`.
+
+**Everyone: reading logs and verdicts.** `scripts/city_logs.js`: paste it into the DevTools console on projectnandaitaly.ai/team, then `await logs('booking')`, `await logs('all', '<need_id>')` or `await journey('<need_id>')`. Logs keep only the last ~150 lines per agent; the journey (`verdict.rows` + `messages`) says where points went.
 
 ## 8. If something breaks
 
-Tell Leo in Huddle (or the team chat) with the exact error text. Leo can roll an agent back to the last good version in a minute (`city rollback`).
+Tell Leo in Huddle (or the team chat) with the exact error text. The deploy runner rolls a front door back automatically if it goes down; Leo can also roll back by hand (`city rollback`, only to a certified release).
