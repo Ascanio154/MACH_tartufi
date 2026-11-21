@@ -305,23 +305,26 @@ async def _advance_alone(
         taken = _withdrawn(chat, agent) | sent.again
     else:
         taken = _offered(chat, agent, number) | sent.offers
-    fits = fitting(
-        [line for line in world.splitlines() if "slot_id=" in line],
-        now=now,
-        priority=priority,
-        lang=_lang(chat),
-        gender=_gender(chat),
-        facility=agent if fixed == "CONS-GIN" else None,
-        procedure=procedure,
-    )
     refused = {mark.partition(":")[2] for mark in _sent(key).offers if mark.startswith("bad-doc:")}
-    chosen = [
-        slot
-        for slot in fits
-        if slot.get("slot_id") not in taken | _USED and slot.get("facility") != avoid
-        # Journey 104: the facility refused s1 twice. Same doctor, same day: offer something else.
-        and f"{slot.get('doctor_id', '')}|{slot.get('at', '')[:10]}" not in refused
-    ]
+    chosen: list[dict[str, str]] = []
+    for reserve in (False, _reserve_open(chat)):
+        fits = fitting(
+            [line for line in world.splitlines() if "slot_id=" in line],
+            now=now,
+            priority=priority,
+            lang=_lang(chat),
+            gender=_gender(chat),
+            facility=agent if fixed == "CONS-GIN" else None,
+            procedure=procedure,
+            reserve=reserve,
+        )
+        chosen = chosen or [
+            slot
+            for slot in fits
+            if slot.get("slot_id") not in taken | _USED and slot.get("facility") != avoid
+            # Journey 104: the facility refused s1 twice. Same doctor, same day: offer another.
+            and f"{slot.get('doctor_id', '')}|{slot.get('at', '')[:10]}" not in refused
+        ]
     if avoid and not chosen:
         # The facility is unreachable and nothing else fits here: a partner ASST may have it.
         if fixed is None and await _ask_partners(
@@ -480,9 +483,9 @@ async def _on_confirm(
             await _say(city, message.sender, _phrase("unknown_offer", _lang(chat), chat=chat,
                                                      agent=agent, citizen=message.sender))
             return
-        partner_slot = bool(facility) and facility not in _own_facilities(chat) and not (
-            offer_id or f"of-{slot}"
-        ).startswith("of-")
+        # Level 5 (rule P2): a partner's own offer_id can start with "of-" too (Bovisa, journey
+        # 134), so the facility decides, never the id.
+        partner_slot = bool(facility) and facility not in _own_facilities(chat) | _TEAM_AGENTS
         if not consent and not partner_slot:
             await _ask_booking_consent(city, chat, agent, message.sender, offer_id or f"of-{slot}")
             return
@@ -525,7 +528,7 @@ async def _on_confirm(
         return
     offer_id = offer_id or offer.get("offer_id", "")
     cross = ""
-    if facility not in _own_facilities(chat) and not offer_id.startswith("of-"):
+    if facility not in _own_facilities(chat) | _TEAM_AGENTS:
         # A partner ASST's slot: no citizen data leaves before the cross_asst consent (P2).
         ref = _cross_consent_ref(chat, citizen)
         if not ref:

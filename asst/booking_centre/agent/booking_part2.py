@@ -38,6 +38,9 @@ async def _desk(
     # A citizen always gets an answer in the same turn: the review marks a message left
     # without reply as passive (-1). _say flags every message that reaches the citizen.
     flag = _REPLIED.set([False])
+    key = message.need_id or message.msg_id
+    if key not in _WARM and len(_WARM) < _SENT_NEEDS:
+        _WARM[key] = asyncio.ensure_future(_warm_line(city, message.text, _lang(chat)))
     try:
         turn = asyncio.ensure_future(
             _desk_turn(city, message, chat, hold_self=hold_self, fixed=fixed))
@@ -267,10 +270,12 @@ _PHRASES: dict[str, tuple[str, str]] = {
         "The facility could not keep this slot: I am sending you other dates right away.",
     ),
     "receipt": (
-        "Prenotazione confermata. Il giorno della visita si presenti alla struttura con questo "
+        "Prenotazione confermata: ho sentito la struttura, che ha bloccato e registrato il posto "
+        "a suo nome. Il giorno della visita si presenti alla struttura con questo "
         "booking_id, la ricetta e un documento per registrare l'arrivo. Se può, usi i mezzi "
         "pubblici; per esigenze di accessibilità me lo scriva e avviso la struttura.",
-        "Booking confirmed. On the day of the visit go to the facility with this booking_id, "
+        "Booking confirmed: I contacted the facility, which held and registered the slot in your "
+        "name. On the day of the visit go to the facility with this booking_id, "
         "your referral and an ID document to register your arrival. If you can, use public "
         "transport; for accessibility needs write to me and I will tell the facility.",
     ),

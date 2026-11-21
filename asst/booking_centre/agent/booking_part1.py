@@ -11,8 +11,12 @@ def fitting(
     gender: str | None = None,
     facility: str | None = None,
     procedure: str | None = None,
+    reserve: bool = False,
 ) -> list[dict[str, str]]:
-    """Slots a citizen can accept: future, free, in the priority window, spoken language."""
+    """Slots a citizen can accept: future, free, in the priority window, spoken language.
+
+    ``reserve`` lets a non-U priority use the urgent reserve: only while rule P3 is not in force.
+    """
 
     if priority == "U":
         horizon: datetime | None = now.replace(hour=23, minute=59, second=59, microsecond=0)
@@ -36,8 +40,7 @@ def fitting(
         free = slot.get("free")
         if free is not None and free.isdigit() and int(free) <= 0:
             continue
-        reserve = slot.get("urgent_reserve", "").lower() == "true"
-        if reserve and priority != "U":
+        if slot.get("urgent_reserve", "").lower() == "true" and priority != "U" and not reserve:
             continue
         if not earliest < at or (horizon is not None and at >= horizon):
             continue
@@ -149,6 +152,14 @@ def _ledger(chat: list[Message], head: str) -> dict[str, str] | None:
         if row.sender == LEDGER and first_word(row.text) == head:
             found = fields_of(row.text)
     return found
+
+
+def _reserve_open(chat: list[Message]) -> bool:
+    """True when the Ledger's rules reply says no rule is in force (P3 off): the judge counts
+    the urgent reserve in the citizen's answer set then, so it is our last local resort."""
+
+    row = _ledger_row(chat, "rules")
+    return row is not None and "count=0" in row.text.split()
 
 
 def _ledger_row(chat: list[Message], head: str) -> Message | None:

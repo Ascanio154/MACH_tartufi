@@ -513,3 +513,56 @@ class Level4Live(_Fresh):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ModelCity(PartnerCity):
+    """A city whose model answers ``reply``."""
+
+    reply = "Capisco la sua preoccupazione per la schiena, me ne occupo volentieri."
+
+    async def llm(self, messages, *, need_id=None):
+        return {"content": self.reply}
+
+
+class WarmSentence(_Fresh):
+    async def first_offer(self, reply: str) -> str:
+        city = ModelCity(booking_chat(), peers=peers())
+        city.reply = reply
+        await citizen_says(city, f"Ho mal di schiena. need.request prescription_number={RX} lang=it")
+        return next(t for t in city.sent_to(CIT) if t.startswith("offer "))
+
+    async def test_model_sentence_rides_on_the_first_offer(self) -> None:
+        text = await self.first_offer(ModelCity.reply)
+        self.assertIn(ModelCity.reply, text)
+        self.assertEqual(bc.understood(msg(AGENT, text, CIT)).type, "offer")
+        self.assertEqual(len(bc._offers_in(text)), len(bc._offers_in(text.replace(ModelCity.reply, ""))))
+
+    async def test_unsafe_model_sentence_is_dropped(self) -> None:
+        for bad in ("Prenda 2 compresse.", "Le mando offer_id=x subito.", "Va bene, confirm fatto.",
+                    "Le consiglio un farmaco per il dolore."):
+            reset_memory()
+            self.assertNotIn(bad, await self.first_offer(bad), bad)
+
+    async def test_receipt_sentence_keeps_the_act(self) -> None:
+        for text in bc._PHRASES["receipt"]:
+            line = "booking.receipt booking_id=bk-1 ledger_ref=lr-1 " + text
+            self.assertEqual(bc.understood(msg(AGENT, line, CIT)).type, "booking.receipt")
+
+    async def test_partner_offer_with_of_prefix_still_asks_cross_consent(self) -> None:
+        # Level 5, rule P2 (journey 134): Bovisa's offer ids start with "of-" like ours.
+        city = await asked_city()
+        await partner_says(city, PX1, VALID_A.replace("offer_id=p-A", "offer_id=of-A"))
+        await citizen_says(city, "confirm offer_id=of-A consent_ref=cons-booking")
+        self.assertEqual(confirms_to(city, PX1), [])
+        self.assertIn("purpose=cross_asst", city.sent_to(CIT)[-1])
+
+    async def test_urgent_reserve_only_while_no_rule_is_in_force(self) -> None:
+        only = [slot("S-U", "h1", "2026-11-24T09:00:00+01:00", "tue") + " urgent_reserve=true"]
+        for rules, expected in (("rules count=0", ["S-U"]), ("rules count=1 P3 urgent_reserve", [])):
+            reset_memory()
+            chat = booking_chat(slots=only) + [msg(bc.LEDGER, rules, AGENT)]
+            city = PartnerCity(chat, peers=[])
+            city.inbound = chat[0]
+            await advance(city)
+            got = [o["slot_id"] for t in city.sent_to(CIT) for o in bc._offers_in(t)]
+            self.assertEqual(got, expected, rules)
