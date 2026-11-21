@@ -185,7 +185,7 @@ class OneOfferMessage(unittest.IsolatedAsyncioTestCase):
         await run_advance(city)
         to_citizen = city.sent_to(CIT)
         self.assertEqual(len(to_citizen), 1)
-        self.assertEqual(len(offer_lines(to_citizen[0])), 6)
+        self.assertEqual(len(offer_lines(to_citizen[0])), 3)
 
     async def test_confirm_on_third_offer_forwards_right_slot(self) -> None:
         city = FakeCity(booking_chat())
@@ -260,7 +260,7 @@ class PrescriptionRenewal(unittest.IsolatedAsyncioTestCase):
 
     async def test_renewed_number_gets_fresh_offer(self) -> None:
         city = FakeCity(booking_chat())
-        await run_advance(city)  # six offers for the old number
+        await run_advance(city)  # three offers for the old number
         city.chat += [
             msg(CIT, f"need.request prescription_number={NEW} lang=it", AGENT),
             msg(AGENT, f"prescription prescription_number={NEW}", LEDGER),
@@ -269,7 +269,7 @@ class PrescriptionRenewal(unittest.IsolatedAsyncioTestCase):
         city.inbound = city.chat[-1]
         await run_advance(city)
         fresh = offer_messages(city.sent_to(CIT))[-1]
-        self.assertEqual(len(offer_lines(fresh)), 6)
+        self.assertEqual(len(offer_lines(fresh)), 3)
         self.assertTrue(all(f"prescription_number={NEW}" in line.split() for line in offer_lines(fresh)))
 
     async def test_partner_cancel_expired_asks_renewal(self) -> None:
@@ -333,3 +333,40 @@ class FacilityDown(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExclusiveOffers(unittest.IsolatedAsyncioTestCase):
+    """A slot offered to one citizen is not offered to the next one (nine confirms, one slot)."""
+
+    def setUp(self) -> None:
+        reset_memory()
+
+    async def _offered(self, key: str) -> set[str]:
+        city = FakeCity(booking_chat())
+        await bc._advance_alone(city, city.inbound, list(city.chat), key, fixed=None, replacing=False)
+        return {bc.fields_of(line)["slot_id"] for text in city.sent_to(CIT) for line in offer_lines(text)}
+
+    async def test_second_citizen_gets_other_slots(self) -> None:
+        first = await self._offered("N-first")
+        second = await self._offered("N-second")
+        self.assertTrue(first and second)
+        self.assertFalse(first & second)
+
+    async def test_with_nothing_else_left_the_alternative_still_offers_real_slots(self) -> None:
+        seen: set[str] = set()
+        for key in ("N-1", "N-2", "N-3", "N-4"):
+            got = await self._offered(key)
+            self.assertTrue(got)
+            seen |= got
+        self.assertEqual(len(seen), 6)  # the six slots that fit, shared only at the very end
+
+    async def test_a_cancelled_offer_goes_back_to_the_pool(self) -> None:
+        first = await self._offered(NEED)
+        back = sorted(first)[0]
+        chat = booking_chat()
+        chat.append(msg(AGENT, bc._offer_block(
+            [bc.fields_of(line) for line in DEFAULT_SLOTS if f"slot_id={back} " in line], RX, "D", "it"), CIT))
+        chat.append(msg(CIT, f"Non posso. cancel offer_id=of-{back} reason=day", AGENT))
+        city = FakeCity(chat)
+        await bc._desk_turn(city, city.inbound, list(city.chat), hold_self=False, fixed=None)
+        self.assertNotIn(back, bc._SHOWN)

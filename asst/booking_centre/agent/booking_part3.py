@@ -354,7 +354,9 @@ async def _advance_alone(
     apart = [slot for slot in chosen
              if _SHOWN.get(slot["slot_id"], (0.0, key))[1] == key
              or clock - _SHOWN[slot["slot_id"]][0] > _SHOWN_FOR]
-    chosen = apart or chosen
+    # No fallback to a slot another citizen is deciding on: with none of our own left, the
+    # search goes on below (next page, partner ASSTs, relaxed alternative).
+    chosen = apart
     if avoid and not chosen:
         # The facility is unreachable and nothing else fits here: a partner ASST may have it.
         if fixed is None and await _ask_partners(
@@ -459,11 +461,13 @@ async def _close_search(city: City, chat: list[Message], agent: str, citizen: st
         return
     # S not empty and no booking is -1, and a B/D citizen refuses the waiting list: offer real
     # slots with one constraint relaxed; with none left, an honest sentence.
-    relaxed = _relaxed_block(chat, agent, late)
+    relaxed = _relaxed_block(chat, agent, late, key)
     if not relaxed and not late:
         return
     if await _say(city, citizen, relaxed or text):
         entry.offers.add("partner-closed")
+        for offer in _offers_in(relaxed):
+            _SHOWN.setdefault(offer["slot_id"], (time.monotonic(), key))
     if not relaxed and _number(chat):
         # Nothing to offer at all: the GP who prescribed should know its patient has no visit.
         await _say(city, _GP, f"Vi avviso per la ricetta {_number(chat)}: non ho trovato posti "
@@ -471,7 +475,7 @@ async def _close_search(city: City, chat: list[Message], agent: str, citizen: st
                    "cercare; se per voi il caso non può aspettare, valutate un'alternativa.")
 
 
-def _relaxed_block(chat: list[Message], agent: str, late: bool = True) -> str:
+def _relaxed_block(chat: list[Message], agent: str, late: bool = True, key: str = "") -> str:
     """Our real slots with one constraint relaxed: the doctor first, then (``late``) the window."""
 
     number = _number(chat)
@@ -494,6 +498,11 @@ def _relaxed_block(chat: list[Message], agent: str, late: bool = True) -> str:
         fits = [slot for slot in fitting(list(lines.values()), now=now, priority=window,
                                          lang=speaks, procedure=procedure, born=_born(chat))
                 if slot.get("slot_id") not in taken]
+        # Slots another citizen is deciding on come last: only when nothing else is left.
+        clock = time.monotonic()
+        fits = [slot for slot in fits
+                if _SHOWN.get(slot["slot_id"], (0.0, key))[1] == key
+                or clock - _SHOWN[slot["slot_id"]][0] > _SHOWN_FOR] or fits
         if fits:
             lead = _RELAXED_IT if lang == "it" else _RELAXED_EN
             return _offer_block(_pick(fits, _days(chat)), number, priority, lang, lead=lead)

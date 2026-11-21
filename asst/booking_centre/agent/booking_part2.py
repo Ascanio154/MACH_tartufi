@@ -147,6 +147,11 @@ async def _desk_turn(
             # same second. So a cancel is answered only when it leaves nothing open and nothing
             # on its way to a facility, and once per burst: then we look for something else.
             clock = time.monotonic()
+            # The citizen gives the slot back: the next citizen can have it at once.
+            back = _find_offer(chat, city.agent_id,
+                               fields_of(message.text).get("offer_id", "")).get("slot_id", "")
+            if _SHOWN.get(back, (0.0, ""))[1] == key:
+                del _SHOWN[back]
             busy = (_open_offers(chat, city.agent_id, message.sender)
                     or _who(chat, message.sender) in _PENDING
                     or clock - _CANCEL_AT.get(key, -1e9) < _CANCEL_GAP)
@@ -207,7 +212,10 @@ _USED: set[str] = set()
 _SHOWN: dict[str, tuple[float, str]] = {}
 # 21/11: five citizens confirmed the same slot in one minute (40 s of head start, but a citizen
 # answers after 3-4 minutes); only one of them can get it.
-_SHOWN_FOR = 300.0
+# 21/11 10:50: nine citizens confirmed s2 22/12 10:30; the facility's refusal reached the eight
+# losers up to 13 minutes later. A slot we offered stays with that citizen for 15 minutes (by
+# then it is forwarded and in _USED, given back by a cancel, or past).
+_SHOWN_FOR = 900.0
 # Procedure -> the world page that held today's slots for the last case: the next case starts
 # there instead of page 1 (one slow Ledger read less). Days only move forward.
 _TODAY_PAGE: dict[str, int] = {}

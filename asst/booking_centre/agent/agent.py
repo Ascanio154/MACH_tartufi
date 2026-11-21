@@ -89,7 +89,9 @@ _TURN_END: contextvars.ContextVar[float] = contextvars.ContextVar("booking_turn_
 _SENT_NEEDS = 4096
 # Every slot goes in ONE offer message: the citizen chooses in that turn, and a later message
 # does not enter a choice already made. A citizen message holds at most 2000 characters.
-_MAX_OFFERS = 6
+# Three per citizen (six until 21/11 11:00): each offered slot is kept for that citizen, and six
+# apiece left the citizens after the second one with only slots somebody else was deciding on.
+_MAX_OFFERS = 3
 _MAX_TEXT = 2000
 _OFFER_IT = (
     "Grazie per avermi scritto, me ne occupo io: ho cercato tra i posti liberi quelli adatti a "
