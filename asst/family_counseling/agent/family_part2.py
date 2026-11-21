@@ -416,6 +416,23 @@ _SHARED_AGENDA_FOR = 900.0
 _SHARED_WORLD_FOR = 300.0
 
 
+# Sat 21/11 15:00: Ledger answers reach us 15-75 real minutes old, so "now" was up to 3 agenda
+# days behind and every offer came back `cancel reason=past` (0 confirms in 14 journeys).
+# The agenda runs 60x the real clock: one reading of the public scoreboard gives the offset.
+# ponytail: hardcoded calibration, wrong after a city pause; it only ever moves "now" forward
+# and only within 5 days of the Ledger's own clock, so a pause or a new epoch falls back to it.
+_WALL_REAL = datetime.fromisoformat("2026-11-21T14:10:02.700+00:00")
+_WALL_AGENDA = datetime.fromisoformat("2027-01-06T06:49:59.559+00:00")
+
+
+def _wall_agenda(now: datetime, real: datetime | None = None) -> datetime:
+    """``now`` moved forward to the agenda time the real clock implies, when they are close."""
+
+    real = real or datetime.now(_WALL_REAL.tzinfo)
+    wall = _WALL_AGENDA + 60 * (real - _WALL_REAL)
+    return wall if timedelta(0) < wall - now < timedelta(days=5) else now
+
+
 def _shared_read(command: str) -> str | None:
     """The text of a recent Ledger answer to ``command`` from any case, or None."""
 
@@ -505,6 +522,7 @@ async def _family_offers(
         guessed = _when(fields_of(_shared_read("agenda") or "").get("agenda_now", ""))
         if guessed is not None and guessed > now:
             now = guessed
+    now = _wall_agenda(now)
     prefs = _family_preferences(state.rows, citizen)
     days = _family_days(prefs.get("days", ""))
     # Registry attributes are optional. Unknown doctors are offered by exact id;

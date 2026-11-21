@@ -579,3 +579,17 @@ class LateClockAtHold(unittest.IsolatedAsyncioTestCase):
         await fc._family(silent, late, list(silent.chat))
         self.assertEqual(len(silent.to_ledger("hold")), 1, "the late clock answer lets the hold go")
         self.assertEqual(len(silent.to_ledger("agenda")), asks, "no new agenda request in the chase")
+
+
+class WallAgendaTest(unittest.TestCase):
+    """A stale Ledger clock is moved forward to the real-clock agenda; a far one is left alone."""
+
+    def test_stale_clock_moves_forward_and_other_epochs_stay(self):
+        from datetime import datetime, timedelta
+        mod = fc
+        real = mod._WALL_REAL + timedelta(minutes=10)           # 10 real min = 10 agenda hours
+        wall = mod._WALL_AGENDA + timedelta(hours=10)
+        self.assertEqual(mod._wall_agenda(wall - timedelta(hours=74), real), wall)   # stale
+        self.assertEqual(mod._wall_agenda(wall + timedelta(hours=1), real), wall + timedelta(hours=1))
+        old = datetime.fromisoformat("2026-11-23T08:00:00+01:00")                    # another epoch
+        self.assertEqual(mod._wall_agenda(old, real), old)
