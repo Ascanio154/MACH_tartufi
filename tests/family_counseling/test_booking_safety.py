@@ -593,3 +593,19 @@ class WallAgendaTest(unittest.TestCase):
         self.assertEqual(mod._wall_agenda(wall + timedelta(hours=1), real), wall + timedelta(hours=1))
         old = datetime.fromisoformat("2026-11-23T08:00:00+01:00")                    # another epoch
         self.assertEqual(mod._wall_agenda(old, real), old)
+
+
+class ProbeReadsNoMailbox(unittest.IsolatedAsyncioTestCase):
+    """The deploy's custody probe (no need_id, no text) never reads the whole mailbox."""
+
+    async def test_probe_from_any_sender_reads_no_mailbox(self):
+        from city_sdk.city import Message, Need
+        from tests.facility.test_no_mailbox import ProbeCity
+        for sender in ("citizen:probe", "city:conformance"):
+            with self.subTest(sender=sender):
+                probe = Message(type="chat", sender=sender, msg_id=f"probe-{sender}", need_id=None,
+                                body={}, recipient=AGENT)
+                city = ProbeCity(AGENT, probe)
+                with mock.patch.object(fc, "role_of", return_value="family_counseling"):
+                    await fc.main(Need(service="", district=8, summary="", message=probe), city)
+                self.assertNotIn(None, city.reads)

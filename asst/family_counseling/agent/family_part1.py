@@ -546,6 +546,11 @@ async def _family(city: City, message: Message, chat: list[Message]) -> None:
         # TRUST RING: never answered, never obeyed, never given data. Logged for ring.alert.
         _LOG.info("family.ring.alert suspect=%s reason=%s", message.sender, suspect)
         return
+    # The deploy's custody.ack probe has no need_id and no text: history(need_id=None) reads
+    # the whole mailbox (up to 7 times a turn) and misses the 5 s renew window (1.0.26 failed
+    # 3 times). A message with no case and nothing said has nothing to answer.
+    if not message.need_id and not message.text:
+        return
     key = (city.agent_id, message.need_id or message.msg_id)
     state = _FAMILY_CASES.setdefault(key, _FamilyCase())
     _FAMILY_CASES.move_to_end(key)
