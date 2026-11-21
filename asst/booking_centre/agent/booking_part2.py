@@ -695,7 +695,7 @@ def _desk_partner_slots(
         horizon = None
     else:
         horizon = now + timedelta(days=_DEADLINE_DAYS.get(priority or "", 14))
-    earliest = now + (_LEAD if priority == "U" else _LEAD_SLOW)
+    earliest = now + _lead(priority)
     if after is not None:
         earliest = max(earliest, after - timedelta(seconds=1))  # a slot at ``after`` is inside
     if deadline is not None and (horizon is None or deadline < horizon):

@@ -44,6 +44,13 @@ _LEAD = timedelta(hours=4)
 # 21/11 11:00: a message now takes ~3 real min per hop, and offer -> confirm -> forward -> hold
 # is four hops: 8 hours were gone before the hold (33 confirms, no receipt).
 _LEAD_SLOW = timedelta(hours=16)
+# 21/11 11:50: ~5 real min per message, offer -> commit ~25 agenda hours. D and P have room for
+# a day of margin; B (two days in all) keeps 16 hours or its window is empty.
+_LEAD_LONG = timedelta(hours=24)
+
+
+def _lead(priority: str | None) -> timedelta:
+    return _LEAD if priority == "U" else _LEAD_SLOW if priority == "B" else _LEAD_LONG
 # Doctor key (the last segment of doctor_id) -> languages, gender, days. ``*`` is the ASST's
 # rare language. The Ledger's slot line names the doctor; it does not repeat this table.
 _DOCTORS: dict[str, tuple[frozenset[str], str, frozenset[str]]] = {

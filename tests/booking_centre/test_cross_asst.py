@@ -99,7 +99,7 @@ class AskPartners(_Fresh):
             self.assertEqual(keys(text), {"service_type", "procedure", "priority", "request_id",
                                           "lang", "deadline", "after", "mach", "lease_s"})
             self.assertIn("mach=1.4", text.split())
-            self.assertIn("after=2026-11-24T00:00:00+01:00", text.split())  # now + 16 agenda hours
+            self.assertIn("after=2026-11-24T08:00:00+01:00", text.split())  # now + 24 agenda hours (priority D)
             self.assertIn("lang=it", text.split())
             self.assertNotIn("citizen", text)
             self.assertNotIn(RX, text)

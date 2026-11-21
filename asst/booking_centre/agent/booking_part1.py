@@ -29,7 +29,7 @@ def fitting(
         horizon = born + timedelta(days=_DEADLINE_DAYS[priority]) - _BORN_MARGIN
     else:
         horizon = now + timedelta(days=_DEADLINE_DAYS.get(priority or "", 14))
-    earliest = now + (_LEAD if priority == "U" else _LEAD_SLOW)
+    earliest = now + _lead(priority)
     chosen: list[tuple[datetime, dict[str, str]]] = []
     for line in lines:
         slot = fields_of(line)
@@ -450,7 +450,7 @@ def _ring_criteria(chat: list[Message], priority: str | None) -> list[str]:
         found.append(f"deadline={end.isoformat(timespec='seconds')}")
     if now is not None:
         # MACH-1.3 R4: the asker sets the window. Anything sooner we drop ourselves (fitting).
-        start = now + (_LEAD if priority == "U" else _LEAD_SLOW)
+        start = now + _lead(priority)
         found.append(f"after={start.isoformat(timespec='seconds')}")
     return [item for item in found if re.fullmatch(r"[a-z_]+=[A-Za-z0-9:/+.-]+", item)]
 
