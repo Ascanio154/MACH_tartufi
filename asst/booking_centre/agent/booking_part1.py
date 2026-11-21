@@ -507,6 +507,10 @@ def _next_page(world: str, now: datetime, priority: str | None,
     """
 
     page, pages = _page(world)
+    if page > pages >= 1:
+        # A remembered "today page" past the catalogue's end (page 3 of 1): step back into range
+        # instead of telling the citizen there is no slot (Sat 21/11, 104-130 acceptable slots).
+        return pages if pages not in seen else (1 if 1 not in seen else 0)
     days = sorted(day for day in (_when(fields_of(line).get("at", ""))
                                   for line in world.splitlines() if "slot_id=" in line) if day)
     if days and days[0] > now and page > 1 and page - 1 not in seen:

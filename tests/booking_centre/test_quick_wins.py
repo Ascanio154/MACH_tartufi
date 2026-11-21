@@ -475,3 +475,15 @@ class StaleWorldAsk(unittest.IsolatedAsyncioTestCase):
         await bc.main(Need(service="booking_centre", summary="", message=chat[-1]), city)
         asks = [t for t in city.sent_to(LEDGER) if t.startswith("world ")]
         self.assertIn("world procedure=VIS-FIS page=1", asks)
+
+
+class RememberedPageOutOfRange(unittest.IsolatedAsyncioTestCase):
+    """A remembered 'today page' past the catalogue's end (page 3 of 1) made _next_page stop and
+    the citizen heard 'no suitable slots' while page 1 had them (the morning's 'Purtroppo'
+    cases with 104-130 acceptable slots)."""
+
+    def test_next_page_steps_back_into_range(self) -> None:
+        from datetime import datetime
+        now = datetime.fromisoformat(NOW)
+        self.assertEqual(bc._next_page("slots procedure=VIS-FIS page=3/1\n", now, "D", frozenset({3})), 1)
+        self.assertEqual(bc._next_page("slots procedure=VIS-FIS page=5/4\n", now, "D", frozenset({5})), 4)
