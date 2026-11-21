@@ -95,11 +95,40 @@ class AskPartners(_Fresh):
         self.assertNotIn(HOSP, targets)
         self.assertTrue(targets <= {PX1, PX2, PX3, PX4})
         for _, text in sent:
-            self.assertEqual(keys(text), {"service_type", "procedure", "priority", "request_id"})
+            # MACH-1.2: search criteria only (lang, deadline), never the citizen or the referral.
+            self.assertEqual(keys(text), {"service_type", "procedure", "priority", "request_id",
+                                          "lang", "deadline"})
+            self.assertIn("lang=it", text.split())
+            self.assertNotIn("citizen", text)
+            self.assertNotIn(RX, text)
             self.assertIn("service_type=hospital.physiatry", text.split())
             self.assertIn("procedure=VIS-FIS", text.split())
             self.assertIn("priority=D", text.split())
             self.assertIn(f"request_id=x-{NEED}", text.split())
+
+    async def test_request_carries_citizen_criteria(self) -> None:
+        chat = booking_chat(slots=PAST_ONLY)
+        chat[0] = msg(CIT, f"need.request prescription_number={RX} lang=en gender_preference=f "
+                           "days=tue/thu", AGENT)
+        city = PartnerCity(chat, peers=peers())
+        await advance(city)
+        sent = requests(city)
+        self.assertTrue(sent)
+        for _, text in sent:
+            words = text.split()
+            self.assertIn("lang=en", words)
+            self.assertIn("gender_preference=f", words)
+            self.assertIn("days=thu/tue", words)
+
+    async def test_still_none_said_once_for_a_burst_of_cancels(self) -> None:
+        city = PartnerCity(booking_chat(slots=PAST_ONLY), peers=peers())
+        bc._sent(NEED).offers.add("partner-closed")
+        for n in range(4):
+            cancel = msg(CIT, f"cancel offer_id=of-x{n} reason=deadline", AGENT)
+            city.chat.append(cancel)
+            await bc._no_silence(city, cancel, city.chat)
+        still = [t for t in city.sent_to(CIT) if t == bc._phrase("still_none", "it")]
+        self.assertEqual(len(still), 1)
 
     async def test_district_first(self) -> None:
         chat = booking_chat(slots=PAST_ONLY, citizen_extra="area.district=7")

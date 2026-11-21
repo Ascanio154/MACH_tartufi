@@ -357,6 +357,7 @@ async def _ask_partners(
     parts = ["need.request", f"service_type={capability}", f"procedure={procedure}"]
     if priority:
         parts.append(f"priority={priority}")
+    parts.extend(_ring_criteria(chat, priority))
     parts.append(token)
     sent_now = False
     limit = _MAX_PARTNERS if _lang(chat) in {"it", "en"} else _MAX_PARTNERS_RARE
@@ -371,6 +372,29 @@ async def _ask_partners(
         if await _say(city, citizen, notice):
             entry.offers.add("partner-notice")
     return True
+
+
+def _ring_criteria(chat: list[Message], priority: str | None) -> list[str]:
+    """MACH-1.2 search criteria: what the citizen asked, never who they are.
+
+    Without lang= a partner offers Italian doctors to an English speaker (journeys 01060003,
+    01220004): the citizen refuses with reason=lang. Without deadline= it offers slots past the
+    referral's window (journey 01790002, reason=deadline).
+    """
+
+    found = [f"lang={_lang(chat)}"]
+    gender = _gender(chat)
+    if gender:
+        found.append(f"gender_preference={gender}")
+    days = sorted(_days(chat))
+    if days:
+        found.append("days=" + "/".join(days))
+    agenda = _ledger(chat, "agenda")
+    now = _when("" if agenda is None else agenda.get("agenda_now", ""))
+    if now is not None and priority in _DEADLINE_DAYS:
+        end = now + timedelta(days=_DEADLINE_DAYS[priority])
+        found.append(f"deadline={end.isoformat(timespec='seconds')}")
+    return [item for item in found if re.fullmatch(r"[a-z_]+=[A-Za-z0-9:/+.-]+", item)]
 
 
 def _latest_slots(chat: list[Message]) -> str | None:
