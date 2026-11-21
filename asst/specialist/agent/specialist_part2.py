@@ -399,7 +399,7 @@ async def _on_checked_in(
         return
     token = f"booking_id={booking_id}"
     if citizen and not _we(chat, city.agent_id, token, to=citizen, word="checkin"):
-        await _say(city, citizen, f"checkin booking_id={booking_id}")
+        await _say(city, citizen, f"checkin booking_id={booking_id} {_checkin_words(city, chat, citizen)}")
     if not reports:
         return
     if _we(chat, city.agent_id, token, to=LEDGER, word="report"):
@@ -412,7 +412,7 @@ async def _on_checked_in(
             await _say(
                 city,
                 citizen,
-                f"consent purpose=report_sharing {token} Posso condividere il suo referto?",
+                f"consent purpose=report_sharing {token} {_consent_words(chat, citizen)}",
             )
         chat = await _until(
             city,
@@ -537,4 +537,100 @@ async def _on_reported(city: City, message: Message, chat: list[Message]) -> Non
     token = f"booking_id={booking_id}"
     if _we(chat, city.agent_id, token, to=citizen, word="report"):
         return
-    await _say(city, citizen, f"report booking_id={booking_id} outcome_code=VISIT")
+    shared = any(
+        row.sender == city.agent_id
+        and row.recipient == LEDGER
+        and first_word(row.text) == "report"
+        and token in row.text.split()
+        and "consent_ref" in fields_of(row.text)
+        for row in chat
+    )
+    await _say(
+        city,
+        citizen,
+        f"report booking_id={booking_id} outcome_code=VISIT {_report_words(chat, citizen, shared)}",
+    )
+
+
+# --- words for the citizen ---------------------------------------------------------------------
+# The act and its key=value tokens come first; the sentence after them is for the person.
+# No clinical advice. In the English sentences the words "consent" and "report" appear only in
+# the message that carries that act: the code reads them back to know what was already sent.
+_EN_HINTS = re.compile(
+    r"\b(hello|hi|good morning|i am|i'm|my|the|please|thanks?|appointment|doctor|here|arrived)\b",
+    re.IGNORECASE,
+)
+_IT_HINTS = re.compile(
+    r"\b(buongiorno|buonasera|salve|sono|grazie|il|la|mio|mia|per|della|visita|prenotazione)\b",
+    re.IGNORECASE,
+)
+
+
+def _citizen_lang(chat: list[Message], citizen: str) -> str:
+    """'en' when the citizen writes (or asked) in English, else 'it'."""
+
+    en = it = 0
+    for row in chat:
+        if row.sender != citizen:
+            continue
+        lang = fields_of(row.text).get("lang", "").lower()
+        if lang:
+            return "en" if lang.startswith("en") else "it"
+        en += len(_EN_HINTS.findall(row.text))
+        it += len(_IT_HINTS.findall(row.text))
+    return "en" if en > it else "it"
+
+
+def _checkin_words(city: City, chat: list[Message], citizen: str) -> str:
+    street = _own_street(city)
+    if _citizen_lang(chat, citizen) == "en":
+        where = f" at {street}" if street else ""
+        return (
+            f"Welcome to the cardiology clinic of ASST Greco{where}: your arrival is registered. "
+            "Please take a seat in the waiting room, we will call you when the doctor is ready. "
+            "After the visit we file your visit record and, if a follow-up is needed, we tell you "
+            "what comes next. If you need help with access, just tell the staff."
+        )
+    where = f" in {street}" if street else ""
+    return (
+        f"Benvenuta o benvenuto all'ambulatorio di cardiologia dell'ASST Greco{where}: il suo "
+        "arrivo è registrato. Si accomodi in sala d'attesa, la chiamiamo appena il medico è pronto. "
+        "Dopo la visita archiviamo il referto e, se serve un controllo, le diciamo come procedere. "
+        "Se ha bisogno di assistenza per l'accesso, lo dica pure al personale."
+    )
+
+
+def _consent_words(chat: list[Message], citizen: str) -> str:
+    if _citizen_lang(chat, citizen) == "en":
+        return (
+            "May I share your visit record with your family doctor and the doctors who follow you? "
+            "It helps them continue your care. If you prefer not to, it stays filed privately and "
+            "nothing changes in your care. Just answer yes or no."
+        )
+    return (
+        "Posso condividere il suo referto con il suo medico di base e con i medici che la seguono? "
+        "Serve a darle continuità di cura. Se preferisce di no, il referto resta archiviato in modo "
+        "riservato e per le sue cure non cambia nulla. Mi risponda pure sì o no."
+    )
+
+
+def _report_words(chat: list[Message], citizen: str, shared: bool) -> str:
+    if _citizen_lang(chat, citizen) == "en":
+        how = (
+            "As you agreed, it is shared only with the doctors who follow you."
+            if shared
+            else "It is filed privately; if you later want to share it with other doctors, write to me."
+        )
+        return (
+            f"Your visit record is filed. {how} For any health question, please contact your "
+            "family doctor. Thank you for coming."
+        )
+    how = (
+        "Come concordato, è condiviso solo con i medici che la seguono."
+        if shared
+        else "È archiviato in modo riservato; se in futuro vuole condividerlo con altri medici, me lo scriva."
+    )
+    return (
+        f"Il referto della visita è archiviato. {how} Per qualunque dubbio sulla salute si rivolga "
+        "al suo medico di base. Grazie per essere venuta o venuto."
+    )
