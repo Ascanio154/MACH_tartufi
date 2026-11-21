@@ -851,9 +851,9 @@ def _gp_told_us(chat: list[Message], lang: str) -> str:
         return ""
     if lang == "it":
         return ("Il suo medico di base mi aveva già scritto: «ho appena prescritto questa visita, "
-                "il cittadino vi scriverà a breve», così ho preparato questi posti in anticipo.")
+                "il cittadino vi scriverà a breve», quindi la stavo aspettando.")
     return ("Your family doctor had already written to me: «I have just prescribed this visit, "
-            "the citizen will write to you shortly», so I prepared these slots in advance.")
+            "the citizen will write to you shortly», so I was expecting you.")
 
 
 def _visit_needs(chat: list[Message], lang: str) -> list[str]:
