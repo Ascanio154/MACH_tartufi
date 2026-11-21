@@ -18,13 +18,15 @@ _spec = importlib.util.spec_from_file_location("booking_brain", _BRAIN)
 bc = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(bc)
 bc._PULL_PAUSE = 0
+bc._MAX_PARTNERS = 3  # the tests count three asks out of four peers
+bc._PARTNER_TRIES = 2
 
 
 def reset_memory() -> None:
     """The brain keeps per-process memory in module globals: start every test clean."""
 
     for name in ("_SENT", "_GATES", "_CROSS_ASKED", "_RECEIPTS", "_LAST_OFFERS", "_BOOK_ASKED",
-                 "_PENDING", "_CONFIRMED_BY", "_BOOKED", "_AGENT_NOTED", "_CANCELS_SENT", "_CONFIRMED_TO", "_OFFERED_TO", "_USED", "_WARM"):
+                 "_PENDING", "_CONFIRMED_BY", "_BOOKED", "_AGENT_NOTED", "_CANCELS_SENT", "_CONFIRMED_TO", "_OFFERED_TO", "_USED", "_WARM", "_SHOWN"):
         getattr(bc, name).clear()
 
 AGENT = "agent:bc"

@@ -584,3 +584,37 @@ class WarmSentence(_Fresh):
         receipt = city.sent_to(CIT)[-1]
         self.assertEqual(bc.understood(msg(AGENT, receipt, CIT)).type, "booking.receipt")
         self.assertIn("scritto alla struttura", receipt)
+
+    async def test_partner_cancel_with_relaxed_offer_lines_is_an_offer(self) -> None:
+        # MACH-1.2: "cancel reason=no_availability" first, relaxed offers on the lines below.
+        city = await asked_city()
+        await partner_says(city, PX1, f"cancel request_id=x-{NEED} reason=no_availability\n"
+                           + VALID_A + " relaxed=days")
+        self.assertIn("p-A", [o["offer_id"] for t in city.sent_to(CIT) for o in bc._offers_in(t)])
+
+    async def test_gp_notice_gets_a_plain_thanks_and_nothing_else(self) -> None:
+        city = PartnerCity([], peers=peers())
+        await partner_says(city, bc._GP, f"prescription prescription_number={RX} "
+                           "procedure=VIS-FIS priority=B Buongiorno, vi avviso io per primo.")
+        self.assertEqual([to for to, _ in city.attempts], [bc._GP])
+        self.assertFalse(bc.words(city.attempts[0][1]) & bc._ACT_WORDS)
+
+    async def test_nothing_anywhere_tells_the_gp(self) -> None:
+        city = await asked_city()
+        self.assertEqual(len(city.sent_to(bc._GP)), 1)
+        self.assertIn(RX, city.sent_to(bc._GP)[0])
+
+
+class WorldPages(unittest.TestCase):
+    def page(self, n: int, pages: int, first_day: int) -> str:
+        rows = [slot(f"S-{n}-{i}", "h1", f"2026-11-{first_day + i:02d}T09:00:00+01:00", "mon")
+                for i in range(2)]
+        return f"slots procedure=VIS-FIS page={n}/{pages}\n" + "\n".join(rows)
+
+    def test_jumps_over_the_past_days_and_stops_after_the_window(self) -> None:
+        now = bc._when("2026-11-23T08:00:00+01:00")
+        self.assertGreater(bc._next_page(self.page(1, 30, 2), now, "B"), 5)   # 21 days behind
+        self.assertEqual(bc._next_page(self.page(9, 30, 22), now, "B"), 10)   # around today
+        self.assertEqual(bc._next_page(self.page(12, 30, 27), now, "B"), 0)   # past the window
+        self.assertEqual(bc._next_page(self.page(30, 30, 22), now, "B"), 0)   # last page
+        self.assertEqual(bc._next_page(self.page(1, 3, 23), now, "B"), 2)     # nothing to skip

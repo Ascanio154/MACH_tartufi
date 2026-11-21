@@ -96,10 +96,21 @@ async def _desk_turn(
     if "booking.receipt" in kind and agent_turn:
         await _forward_receipt(city, message, chat)
         return
-    if "cancel" in kind and agent_turn:
+    if agent_turn and head == "prescription" and message.sender in _TEAM_AGENTS:
+        # Our GP tells us a citizen is on the way: thank it at once (it asked nothing back).
+        visit = fields_of(message.text).get("procedure", "la visita")
+        await _say(city, message.sender, f"Grazie dell'avviso, ricevuto: appena il cittadino mi "
+                   f"scrive con questo numero gli mando subito i posti liberi per {visit}.")
+        return
+    # MACH-1.2: a partner's reply can open with "cancel reason=no_availability" and carry
+    # relaxed "offer ..." lines below. Read it line by line: real slots win over the cancel.
+    slots = agent_turn and bool(_partner_offers_in(message.text, message.sender))
+    if agent_turn and message.sender not in _TEAM_AGENTS:
+        _LOG.info("care.partner.said %s %s", message.sender, message.text[:400])
+    if "cancel" in kind and agent_turn and not slots:
         await _partner_cancel(city, message, chat, fixed=fixed)
         return
-    if "offer" in kind and agent_turn:
+    if ("offer" in kind or slots) and agent_turn:
         key = message.need_id or message.msg_id
         await _locked(key, lambda: _on_partner_offer(city, message, chat))
         return
@@ -167,6 +178,10 @@ def _who(chat: list[Message], citizen: str) -> str:
 _CONFIRMED_BY: dict[str, str] = {}
 # Slots already sent to a facility for a hold (booked or refused): never offered to anyone again.
 _USED: set[str] = set()
+# Slot -> (when, need) of our latest offer of it; _SHOWN_FOR seconds of head start for that need.
+_SHOWN: dict[str, tuple[float, str]] = {}
+_SHOWN_FOR = 40.0
+_PARTNER_TRIES = 60  # x _PULL_PAUSE = 15 s for the partners' first offer
 # Citizens whose receipt we forwarded.
 _BOOKED: set[str] = set()
 # (agent, need) pairs we already explained our message format to.

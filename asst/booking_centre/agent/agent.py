@@ -13,6 +13,7 @@ import contextvars
 import logging
 import os
 import re
+import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
@@ -31,7 +32,7 @@ from city_sdk.city import (
 )
 
 ROLES = ("booking_centre", "gp", "hospital", "specialist_care", "family_counseling")
-_MAX_PAGE = 8
+_MAX_PAGE = 200  # a cap only: _next_page skips the past days and stops after the window
 _PARTNER_ACK = "Ricevuto, verifico la disponibilità e vi rispondo in un solo messaggio."
 _ACK_AFTER = 4.0  # seconds before a citizen hears "I am on it" while we read the Ledger
 # Four agenda hours is about half a minute of real time at 480x, so a slot is still
@@ -137,7 +138,7 @@ _PARTNER_CAPABILITY = {
     "VIS-CARD": "specialist_care.cardiology",
     "CTRL-CARD": "specialist_care.cardiology",
 }
-_MAX_PARTNERS = 3
+_MAX_PARTNERS = 6  # scarcity: three partners were often all full or silent
 _PARTNER_ASK_IT = "Nella nostra ASST non ci sono posti adatti: sto chiedendo alle ASST vicine."
 _PARTNER_ASK_EN = "No suitable slot in our ASST: I am asking the nearby ASSTs."
 _PARTNER_LEAD_IT = ("Da noi non c'erano posti adatti, quindi ho scritto direttamente alle strutture "
@@ -381,6 +382,7 @@ _TEAM_AGENTS = frozenset(
         "agent:q18es2d82f8r",  # specialist
     }
 )
+_GP = "agent:bmrcsmqq6at2"
 _RX_KEYED = re.compile(r"prescription_number[-_:\s]*([A-Za-z0-9][A-Za-z0-9-]{3,39})", re.IGNORECASE)
 _RX_SAID = re.compile(
     r"\b(?:ricetta|impegnativa|prescrizione|prescription|rx)\b"
@@ -651,18 +653,19 @@ async def _until(
     need_id: str | None,
     chat: list[Message],
     ready: Callable[[list[Message]], bool],
+    tries: int = _PULL_TRIES,
 ) -> list[Message]:
     """Re-read the case until ``ready`` or the short wait ends. The push may never arrive."""
 
     fresh = chat
-    for attempt in range(_PULL_TRIES):
+    for attempt in range(tries):
         try:
             fresh = await city.history(need_id=need_id)
         except CapError:
             fresh = chat
         if ready(fresh):
             return fresh
-        if attempt + 1 < _PULL_TRIES:
+        if attempt + 1 < tries:
             await asyncio.sleep(_PULL_PAUSE)
     return fresh
 

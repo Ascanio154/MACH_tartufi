@@ -389,6 +389,30 @@ def _page(text: str) -> tuple[int, int]:
     return 1, 1
 
 
+def _next_page(world: str, now: datetime, priority: str | None) -> int:
+    """The world page to read after this one, 0 when no later page can hold a slot in time.
+
+    The catalogue lists every weekday of the race from its first day, in date order: by day 14
+    the slots still ahead sat six pages in, each one a slow Ledger read (3 minutes before the
+    first offer, journeys 197-201). Jump over the past days; stop once past the window.
+    """
+
+    page, pages = _page(world)
+    days = sorted(day for day in (_when(fields_of(line).get("at", ""))
+                                  for line in world.splitlines() if "slot_id=" in line) if day)
+    if page >= pages or page >= _MAX_PAGE:
+        return 0
+    if not days:
+        return page + 1
+    if days[0] > now + timedelta(days=_DEADLINE_DAYS.get(priority or "", 14)):
+        return 0
+    if page == 1 and days[0] < days[-1] < now:
+        per_page = (days[-1] - days[0]) / timedelta(days=1)
+        ahead = (now - days[0]) / timedelta(days=1)
+        return max(2, min(pages, int(ahead / per_page * 0.9) + 1))  # land a little early
+    return page + 1
+
+
 def _asked(chat: list[Message], agent: str, procedure: str, page: int) -> bool:
     token = f"page={page}"
     proc = f"procedure={procedure}"

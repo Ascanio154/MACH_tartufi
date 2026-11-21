@@ -325,6 +325,13 @@ async def _advance_alone(
             # Journey 104: the facility refused s1 twice. Same doctor, same day: offer another.
             and f"{slot.get('doctor_id', '')}|{slot.get('at', '')[:10]}" not in refused
         ]
+    # Retries arrive in bursts and raced for the same slot (7 "facility cancelled" in 31
+    # failures): a slot just shown to another citizen is left to them while others are free.
+    clock = time.monotonic()
+    apart = [slot for slot in chosen
+             if _SHOWN.get(slot["slot_id"], (0.0, key))[1] == key
+             or clock - _SHOWN[slot["slot_id"]][0] > _SHOWN_FOR]
+    chosen = apart or chosen
     if avoid and not chosen:
         # The facility is unreachable and nothing else fits here: a partner ASST may have it.
         if fixed is None and await _ask_partners(
@@ -340,16 +347,17 @@ async def _advance_alone(
         if await _say(city, citizen, text):
             for offer in _offers_in(text):
                 sent.offers.add(offer["slot_id"])
+                _SHOWN[offer["slot_id"]] = (clock, key)
                 if replacing:
                     sent.again.add(offer["slot_id"])
         return
     refusal = replacing or (message.sender == citizen and "cancel" in words(message.text))
     if taken and not refusal:
         return
-    page, pages = _page(world)
-    if page < pages and page < _MAX_PAGE:
-        if not _asked(chat, agent, procedure, page + 1):
-            await _say(city, LEDGER, f"world procedure={procedure} page={page + 1}")
+    page, further = _page(world)[0], _next_page(world, now, priority)
+    if further:
+        if not _asked(chat, agent, procedure, further):
+            await _say(city, LEDGER, f"world procedure={procedure} page={further}")
         # Journey 162: the Ledger's reply opens no turn, so the citizen waited 16 minutes for
         # their own resend. Read the next page back in this turn and go on.
         fresh = await _until(city, message.need_id, chat,
@@ -377,7 +385,9 @@ async def _advance_alone(
                     row.sender for row in rows
                     if row.sender in partners and first_word(row.text) == "cancel"}
 
-            fresh = await _until(city, message.need_id, chat, answered)
+            # Partners answer in 10-20 s (Bovisa, journeys 116 and 134): wait for a slot with
+            # every preference before falling back to a relaxed one.
+            fresh = await _until(city, message.need_id, chat, answered, tries=_PARTNER_TRIES)
             if not any(row.sender in partners and first_word(row.text) == "offer" for row in fresh):
                 await _close_search(city, fresh, agent, citizen, key)
             return
@@ -412,8 +422,14 @@ async def _close_search(city: City, chat: list[Message], agent: str, citizen: st
         return
     # S not empty and no booking is -1, and a B/D citizen refuses the waiting list: offer real
     # slots with one constraint relaxed; with none left, an honest sentence.
-    if await _say(city, citizen, _relaxed_block(chat, agent) or text):
+    relaxed = _relaxed_block(chat, agent)
+    if await _say(city, citizen, relaxed or text):
         entry.offers.add("partner-closed")
+    if not relaxed and _number(chat):
+        # Nothing to offer at all: the GP who prescribed should know its patient has no visit.
+        await _say(city, _GP, f"Vi avviso per la ricetta {_number(chat)}: non ho trovato posti "
+                   "entro i tempi della priorità, né da noi né nelle ASST vicine. Continuo a "
+                   "cercare; se per voi il caso non può aspettare, valutate un'alternativa.")
 
 
 def _relaxed_block(chat: list[Message], agent: str) -> str:
