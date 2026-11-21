@@ -539,16 +539,23 @@ async def _on_checked_in(
                 citizen,
                 f"consent purpose=report_sharing {token} {_consent_words(chat, citizen)}",
             )
-        chat = await _until(
+        chat = await _until_long(
             city,
             message.need_id,
             chat,
             lambda rows: _consent_answer(rows, city.agent_id, citizen) is not None,
+            _CONSENT_WAIT,
         )
         answer = _consent_answer(chat, city.agent_id, citizen)
         if answer is not None:
             consent_ref = _report_consent_ref(answer, chat, city.agent_id)
     await _file_report(city, message, chat, booking_id, consent_ref=consent_ref)
+
+
+# Seconds the check-in turn waits for the consent answer before filing the report unshared.
+# The judge closes the journey 3-4 minutes after our check-in answer (Sat 21 Nov, 4 visits):
+# 40 history reads took longer than that under load and the report came too late (-1).
+_CONSENT_WAIT = 20.0
 
 
 def _consent_answer(chat: list[Message], agent: str, citizen: str) -> Message | None:
